@@ -1,8 +1,8 @@
 diff --git a/VintagestoryLib/Vintagestory.Common/ChunkIlluminator.cs b/VintagestoryLib/Vintagestory.Common/ChunkIlluminator.cs
-index e2ca303..da7c67d 100644
+index e2ca303..c69acbb 100644
 --- a/VintagestoryLib/Vintagestory.Common/ChunkIlluminator.cs
 +++ b/VintagestoryLib/Vintagestory.Common/ChunkIlluminator.cs
-@@ -1,1110 +1,1641 @@
+@@ -1,1110 +1,1680 @@
  using System;
  using System.Collections.Generic;
 +using System.Runtime.CompilerServices;
@@ -726,14 +726,40 @@ index e2ca303..da7c67d 100644
 +						int absNFromCur = GetEffectiveAbsorption(nBlock, nBaseAbs, dir, lightArrivingAtN,
 +							tmpPosDimensionAware);
 +						int finalLightToN = lightArrivingAtN;
-+						if (absNFromCur > lightArrivingAtN) finalLightToN = 0;
++						if (absNFromCur > lightArrivingAtN)
++						{
++							int nSolidMask = 0;
++							if (nBlock.SideSolid[0]) nSolidMask |= 1;
++							if (nBlock.SideSolid[1]) nSolidMask |= 2;
++							if (nBlock.SideSolid[2]) nSolidMask |= 4;
++							if (nBlock.SideSolid[3]) nSolidMask |= 8;
++							if (nBlock.SideSolid[4]) nSolidMask |= 16;
++							if (nBlock.SideSolid[5]) nSolidMask |= 32;
++
++							// Full cube: keep the incoming light so adjacent leaves don't darken.
++							if (nSolidMask != 63)
++								finalLightToN = 0;
++						}
 +
 +						// Ray from Neighbor chunk to Current chunk
 +						int absNToCur = GetEffectiveAbsorption(nBlock, nBaseAbs, oppDir, nLight);
 +						int lightArrivingAtCur = nLight - absNToCur - 1;
 +						int absCurFromN = GetEffectiveAbsorption(curBlock, curBaseAbs, oppDir, lightArrivingAtCur);
 +						int finalLightToCur = lightArrivingAtCur;
-+						if (absCurFromN > lightArrivingAtCur) finalLightToCur = 0;
++						if (absCurFromN > lightArrivingAtCur)
++						{
++							int curSolidMask = 0;
++							if (curBlock.SideSolid[0]) curSolidMask |= 1;
++							if (curBlock.SideSolid[1]) curSolidMask |= 2;
++							if (curBlock.SideSolid[2]) curSolidMask |= 4;
++							if (curBlock.SideSolid[3]) curSolidMask |= 8;
++							if (curBlock.SideSolid[4]) curSolidMask |= 16;
++							if (curBlock.SideSolid[5]) curSolidMask |= 32;
++
++							// Full cube: keep the incoming light so adjacent leaves don't darken.
++							if (curSolidMask != 63)
++								finalLightToCur = 0;
++						}
 +
 +						if (finalLightToN > nLight)
  						{
@@ -1126,9 +1152,7 @@ index e2ca303..da7c67d 100644
  		{
 -			IWorldChunk unpackedChunkFast = chunkProvider.GetUnpackedChunkFast(posX / chunkSize, posY / chunkSize, posZ / chunkSize, notRecentlyAccessed: true);
 -			if (unpackedChunkFast == null)
-+			// Extinguish sunlight ONLY in chunks from startChunkY down to 0
-+			for (int cy = startChunkY; cy >= 0; cy--)
- 			{
+-			{
 -				return fastSetOfLongs;
 -			}
 -			int index3d = (posY % chunkSize * chunkSize + posZ % chunkSize) * chunkSize + posX % chunkSize;
@@ -1136,7 +1160,9 @@ index e2ca303..da7c67d 100644
 -			unpackedChunkFast.Lighting.SetSunlight_Buffered(index3d, 0);
 -			QueueOfInt queueOfInt2 = new QueueOfInt();
 -			for (int i = 0; i < 6; i++)
--			{
++			// Extinguish sunlight ONLY in chunks from startChunkY down to 0
++			for (int cy = startChunkY; cy >= 0; cy--)
+ 			{
 -				Vec3i vec3i = BlockFacing.ALLNORMALI[i];
 -				int num2 = posX + vec3i.X;
 -				int num3 = posY + vec3i.Y;
@@ -1332,7 +1358,20 @@ index e2ca303..da7c67d 100644
 +					int nEffectiveAbs = GetEffectiveAbsorption(nBlock, nBaseAbs, dir, lightArrivingAtN);
 +
 +					int finalLight = lightArrivingAtN;
-+					if (nEffectiveAbs > lightArrivingAtN) finalLight = 0;
++					if (nEffectiveAbs > lightArrivingAtN)
++					{
++						int solidMask = 0;
++						if (nBlock.SideSolid[0]) solidMask |= 1;
++						if (nBlock.SideSolid[1]) solidMask |= 2;
++						if (nBlock.SideSolid[2]) solidMask |= 4;
++						if (nBlock.SideSolid[3]) solidMask |= 8;
++						if (nBlock.SideSolid[4]) solidMask |= 16;
++						if (nBlock.SideSolid[5]) solidMask |= 32;
++
++						// Full cube: keep the incoming light so adjacent leaves don't darken.
++						if (solidMask != 63)
++							finalLight = 0;
++					}
 +
 +					if (unpackedChunkFast.Lighting.GetSunlight(index3d) < finalLight)
  					{
@@ -1481,7 +1520,7 @@ index e2ca303..da7c67d 100644
 -			NonBlendingLightAxis(lightHsv[0], lightHsv[1], lightHsv[2], posX, posY, posZ, face);
 -		}
 -	}
--
+ 
 -	private void SetBlockLightLevel(byte hue, byte saturation, int value, int posX, int posY, int posZ)
 -	{
 -		IWorldChunk chunkAtPos = GetChunkAtPos(posX, posY, posZ);
@@ -1504,7 +1543,7 @@ index e2ca303..da7c67d 100644
 -		}
 -		return 0;
 -	}
- 
+-
 -	private void NonBlendingLightAxis(byte hue, byte saturation, int lightLevel, int x, int y, int z, BlockFacing face)
 -	{
 -		int num = lightLevel - 1;
@@ -1627,7 +1666,8 @@ index e2ca303..da7c67d 100644
 +		int baseZ = posZ - LIGHT_GRID_HALF;
 +
 +		for (int i = 0; i < touchedCells.Count; i++)
-+		{
+ 		{
+-			CollectLightValuesForLightSource(nearbyLightSource.posX, nearbyLightSource.posY, nearbyLightSource.posZ, posX, posY, posZ, range);
 +			int idx = touchedCells[i];
 +			ref var cell = ref lightGrid[idx];
 +
@@ -1637,7 +1677,8 @@ index e2ca303..da7c67d 100644
 +			// Pass cell by reference
 +			RecalcBlockLightAtPos(wx, wy, wz, ref cell);
 +			touchedChunks.Add(chunkProvider.ChunkIndex3D(wx / num, wy / num, wz / num));
-+		}
+ 		}
+-		foreach (KeyValuePair<Vec3i, LightSourcesAtBlock> visitedNode in VisitedNodes)
 +
 +	}
 +
@@ -1692,7 +1733,8 @@ index e2ca303..da7c67d 100644
 +		// 1. Initialization: place all light sources in their starting positions
 +		for (int srcIdx = 0; srcIdx < nearbyCount; srcIdx++)
  		{
--			CollectLightValuesForLightSource(nearbyLightSource.posX, nearbyLightSource.posY, nearbyLightSource.posZ, posX, posY, posZ, range);
+-			RecalcBlockLightAtPos(visitedNode.Key, visitedNode.Value);
+-			touchedChunks.Add(chunkProvider.ChunkIndex3D(visitedNode.Key.X / num, visitedNode.Key.Y / num, visitedNode.Key.Z / num));
 +			byte h = nearbyH[srcIdx], s = nearbyS[srcIdx], b = nearbyB[srcIdx];
 +			if (b <= 0) continue;
 +
@@ -1725,16 +1767,13 @@ index e2ca303..da7c67d 100644
 +			}
 +
 +			buckets[b].Add((idx, srcIdx));
- 		}
--		foreach (KeyValuePair<Vec3i, LightSourcesAtBlock> visitedNode in VisitedNodes)
++		}
 +
 +		IWorldChunk chunk;
 +
 +		// 2. BFS traversal from the brightest (31) to the dimmest (1)
 +		for (int level = 31; level >= 1; level--)
- 		{
--			RecalcBlockLightAtPos(visitedNode.Key, visitedNode.Value);
--			touchedChunks.Add(chunkProvider.ChunkIndex3D(visitedNode.Key.X / num, visitedNode.Key.Y / num, visitedNode.Key.Z / num));
++		{
 +			var bucket = buckets[level];
 +
 +			for (int bi = 0; bi < bucket.Count; bi++)
