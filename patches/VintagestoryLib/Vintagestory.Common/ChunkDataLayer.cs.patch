@@ -844,7 +844,7 @@ index 4d0bf91..d817eef 100644
 +		}
 +	}
 +
-+	// Stratum start: AVX512 decode (64 blocks/iter; vpermd or split-gather lookup) 
++	// Stratum start: AVX512 decode (64 blocks/iter; vpermd or split-gather lookup)
 +	private static unsafe void DecodePlanesAvx512(int[] dst, int[][] planes, int[] palette, int num)
 +	{
 +		fixed (int* pPalette = palette)
@@ -1149,7 +1149,7 @@ index 4d0bf91..d817eef 100644
 +
 +		return x;
 +	}
-+	// Stratum end 
++	// Stratum end
 +
 +
 +	// Stratum start: AVX2 decode
@@ -1160,7 +1160,7 @@ index 4d0bf91..d817eef 100644
 +
 +	private static readonly Vector256<byte>[] PackCtl = MakePackCtl();
 +	private static readonly Vector256<byte> ExtractCtl = MakeExtractCtl();
-+	
++
 +	/// <summary> Shared AVX2 bit-plane → palette-value decode (blocks and light).</summary>
 +	private static unsafe void DecodePlanesAvx2(int[] dst, int[][] planes, int[] palette, int num)
 +	{
@@ -1363,7 +1363,7 @@ index 4d0bf91..d817eef 100644
 +		Unsafe.WriteUnaligned(pOut + 24, Avx2.GatherMaskVector256(zero, pPalette, idx3, Avx2.CompareGreaterThan(palLenVec, idx3), 4));
 +	}
 +
-+	
++
 +	private static Vector256<byte>[] MakePackCtl()
 +	{
 +		// For plane k: byte g of the word's plane (block group g) is placed into byte k
@@ -1471,8 +1471,8 @@ index 4d0bf91..d817eef 100644
 +		Unsafe.WriteUnaligned(pOut + 16, Avx2.GatherMaskVector256(zero, pPalette, idx2, Avx2.CompareGreaterThan(palLenVec, idx2), 4));
 +		Unsafe.WriteUnaligned(pOut + 24, Avx2.GatherMaskVector256(zero, pPalette, idx3, Avx2.CompareGreaterThan(palLenVec, idx3), 4));
 +	}
-+	
-+	// Stratum end 
++
++	// Stratum end
 +
 +	/// <summary>Gets the block value at a 3D index with palette null-check. Returns 0 if the palette is not initialized.</summary>
  	public int GetUnsafe_PaletteCheck(int index3d)
@@ -2035,7 +2035,7 @@ index 4d0bf91..d817eef 100644
 +			DecodePlanesAvx512(lightOut, dataBits, palette, num);
 +			return;
 +		}
-+		
++
 +		if (Avx2.IsSupported)
 +		{
 +			DecodePlanesAvx2(lightOut, dataBits, palette, num);
