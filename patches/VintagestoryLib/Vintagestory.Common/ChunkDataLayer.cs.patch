@@ -1293,7 +1293,7 @@ index 4d0bf91..ce34102 100644
 +					DecodeWordAvx2_LE8(w, num, pPalette, palLen, tierA, tierB, tblLo, tblHi, pOut + outIdx, mixed1, uniIdx1);
 +					outIdx += 32;
 +				}
-+				
++
 +				// unreachable while SLICESIZE (1024) is even — see the matching
 +				// assert in the num>8 branch below and in DecodePlanesAvx512 for the reasoning.
 +				System.Diagnostics.Debug.Assert(word == 1024, "DecodePlanesAvx2 (num<=8): tail path is expected to be unreachable while SLICESIZE is even.");
@@ -1314,7 +1314,7 @@ index 4d0bf91..ce34102 100644
 +					DecodeWordAvx2(w, num, pPalette, palLen, pOut + outIdx, mixed1, uniIdx1);
 +					outIdx += 32;
 +				}
-+				
++
 +				// SLICESIZE (1024) is even, so the step-by-2 loop above always
 +				// covers word 0..1023 exactly and exits with word == 1024 — this tail is
 +				// unreachable under the current SLICESIZE. Kept as a guarded no-op rather
