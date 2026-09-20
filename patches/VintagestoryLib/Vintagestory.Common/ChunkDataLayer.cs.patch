@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Common/ChunkDataLayer.cs b/VintagestoryLib/Vintagestory.Common/ChunkDataLayer.cs
-index 4d0bf91..77b505f 100644
+index 4d0bf91..ce34102 100644
 --- a/VintagestoryLib/Vintagestory.Common/ChunkDataLayer.cs
 +++ b/VintagestoryLib/Vintagestory.Common/ChunkDataLayer.cs
 @@ -1,9 +1,13 @@
@@ -779,7 +779,7 @@ index 4d0bf91..77b505f 100644
  		readWriteLock.AcquireReadLock();
  		int[][] array = new int[bitsize][];
  		try
-@@ -215,82 +720,797 @@ public class ChunkDataLayer
+@@ -215,82 +720,871 @@ public class ChunkDataLayer
  		{
  			readWriteLock.ReleaseReadLock();
  		}
@@ -856,36 +856,50 @@ index 4d0bf91..77b505f 100644
 +			int outIdx = 0;
 +			int word = 0;
 +
-+			// four-tier palette residency, in order of preference (all memory-free
-+			// except the final gather fallback):
-+			//  - palLen <= 16: single VPERMD table ("Perm").
-+			//  - palLen <= 32: VPERMI2D/VPERMT2D two-table lookup ("Perm2").
-+			//  - palLen <= 64: two VPERMI2D/VPERMT2D lookups + blend on index bit 5 ("Perm2x2").
-+			//    Measured distribution: bitsize==6 (this tier) is 11.35% of AVX512 decode
-+			//    calls, on par with bitsize==5 (14.35%, the existing Perm2 tier) — worth
-+			//    the extra permute+blend over gather.
-+			//  - otherwise: VPGATHERDD ("Gather"). bitsize==7 is only 1.90% of calls in
-+			//    the observed profile, so extending further wasn't judged worthwhile here.
++			// Dispatch:
++			//  - num == 1 (bitsize==1): Bit1 specialization. Bypasses BuildIndices512
++			//    and all palette-residency tiers below entirely. Selected before, and
++			//    independently of, the palLen-keyed tiers — it is not itself a tier.
++			//  - otherwise: four-tier palette residency, in order of preference (all
++			//    memory-free except the final gather fallback):
++			//      - palLen <= 16: single VPERMD table ("Perm").
++			//      - palLen <= 32: VPERMI2D/VPERMT2D two-table lookup ("Perm2").
++			//      - palLen <= 64: two VPERMI2D/VPERMT2D lookups + blend on index bit 5 ("Perm2x2").
++			//        Measured distribution: bitsize==6 (this tier) is 11.35% of AVX512 decode
++			//        calls, on par with bitsize==5 (14.35%, the existing Perm2 tier) — worth
++			//        the extra permute+blend over gather.
++			//      - otherwise (palLen > 64): VPGATHERDD ("Gather"). bitsize==7 is only
++			//        1.90% of calls in the observed profile, so extending further wasn't
++			//        judged worthwhile here.
 +
 +			// Invariant this dispatch relies on: every writer keeps 1 << bitsize <= palette.Length
 +			// (MakeSpaceInPalette doubles palette AND increments bitsize together; CleanUpPalette
 +			// allocates exactly 1 << CalcBitsize(paletteCount+1); both Decompress paths derive
 +			// bitsize as floor(log2(palette.Length))). BuildIndices512 emits indices bounded by
 +			// num (the plane count), not by palLen directly — but because of the invariant above,
-+			// palLen <= 32 implies num <= 5 and palLen <= 64 implies num <= 6, so keying the tiers
-+			// off palLen is equivalent to keying off num, and the 5-bit/6-bit index masks in
-+			// Perm2/Perm2x2 are exact, not an approximation that happens to work for the palLen
-+			// ranges exercised so far.
++			// palLen <= 32 implies num <= 5 and palLen <= 64 implies num <= 6, so for the
++			// palLen-keyed tiers, keying off palLen is equivalent to keying off num, and the
++			// 5-bit/6-bit index masks in Perm2/Perm2x2 are exact, not an approximation that
++			// happens to work for the palLen ranges exercised so far. The bit1 specialization
++			// is keyed directly off num == 1 rather than palLen, but relies on the same
++			// invariant to guarantee palLen >= 2 (so indices 0/1 are always in-bounds).
++			Vector512<int> pal0 = Vector512<int>.Zero, pal1 = Vector512<int>.Zero;
 +			Vector512<int> palVec = Vector512<int>.Zero;
 +			Vector512<int> palLo = Vector512<int>.Zero;
 +			Vector512<int> palHi = Vector512<int>.Zero;
 +			Vector512<int> palLo2 = Vector512<int>.Zero;
 +			Vector512<int> palHi2 = Vector512<int>.Zero;
-+			bool perm1 = palLen <= 16;
++			bool bit1 = num == 1;
++			bool perm1 = !bit1 && palLen <= 16;
 +			bool perm2 = !perm1 && palLen <= 32;
 +			bool perm2x2 = !perm1 && !perm2 && palLen <= 64;
 +
-+			if (perm1)
++			if (bit1)
++			{
++				pal0 = Vector512.Create(pPalette[0]);
++				pal1 = Vector512.Create(palLen > 1 ? pPalette[1] : 0);
++			}
++			else if (perm1)
 +			{
 +				for (int i = 0; i < palLen; i++) palVec = palVec.WithElement(i, pPalette[i]);
 +			}
@@ -910,16 +924,24 @@ index 4d0bf91..77b505f 100644
 +
 +			for (; word + 1 < 1024; word += 2)
 +			{
-+				long uniIdx;
-+				int mixed = LoadWordsAndClassify2(w0, w1, planes, num, word, out uniIdx);
-+				if (perm1)
-+					DecodeWordAvx512_Perm(w0, w1, num, palVec, pPalette, palLen, pOut + outIdx, mixed, uniIdx);
-+				else if (perm2)
-+					DecodeWordAvx512_Perm2(w0, w1, num, palLo, palHi, pPalette, palLen, pOut + outIdx, mixed, uniIdx);
-+				else if (perm2x2)
-+					DecodeWordAvx512_Perm2x2(w0, w1, num, palLo, palHi, palLo2, palHi2, pPalette, palLen, pOut + outIdx, mixed, uniIdx);
++				if (bit1)
++				{
++					LoadWordsBit1(planes, word, out int w0Val, out int w1Val);
++					DecodeWordAvx512_Bit1(w0Val, w1Val, pal0, pal1, pOut + outIdx);
++				}
 +				else
-+					DecodeWordAvx512_Gather(w0, w1, num, pPalette, palLen, pOut + outIdx, mixed, uniIdx);
++				{
++					long uniIdx;
++					int mixed = LoadWordsAndClassify2(w0, w1, planes, num, word, out uniIdx);
++					if (perm1)
++						DecodeWordAvx512_Perm(w0, w1, num, palVec, pPalette, palLen, pOut + outIdx, mixed, uniIdx);
++					else if (perm2)
++						DecodeWordAvx512_Perm2(w0, w1, num, palLo, palHi, pPalette, palLen, pOut + outIdx, mixed, uniIdx);
++					else if (perm2x2)
++						DecodeWordAvx512_Perm2x2(w0, w1, num, palLo, palHi, palLo2, palHi2, pPalette, palLen, pOut + outIdx, mixed, uniIdx);
++					else
++						DecodeWordAvx512_Gather(w0, w1, num, pPalette, palLen, pOut + outIdx, mixed, uniIdx);
++				}
 +				outIdx += 64;
 +			}
 +			// SLICESIZE (1024) is even, so the step-by-2 loop above always covers
@@ -931,12 +953,50 @@ index 4d0bf91..77b505f 100644
 +		}
 +	}
 +
++	// Bit-position constants for the two 16-lane halves of one 32-bit word.
++	// Lane i tests bit i (low half) / bit (16+i) (high half) of the word.
++	private static readonly Vector512<int> BitPosLo512 = Vector512.Create(
++		1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768);
++	private static readonly Vector512<int> BitPosHi512 = Vector512.Create(
++		1 << 16, 1 << 17, 1 << 18, 1 << 19, 1 << 20, 1 << 21, 1 << 22, 1 << 23,
++		1 << 24, 1 << 25, 1 << 26, 1 << 27, 1 << 28, 1 << 29, 1 << 30, unchecked(1 << 31));
++
 +	/// <summary>
-+	/// Four-table VPERMI2D/VPERMT2D lookup for 32 &lt; palLen ≤ 64. Computes both
-+	/// halves' permutes then blends on index bit 5 (idx &amp;32) to pick the correct 32-entry
-+	/// half-table. Entries beyond palLen are zero in their table slot (tables are
-+	/// zero-initialized and filled only up to palLen), preserving
-+	/// "idx &lt; palLen ? palette[idx] : 0" exactly, same as _Perm/_Perm2.
++	/// Stratum: bitsize==1 specialization. Selected when num == 1, before (and
++	/// independently of) the palLen-keyed palette-residency tiers. Bypasses
++	/// BuildIndices512's bit-transpose network entirely (designed for up to 8
++	/// planes; wasted work when there is exactly one bit of index to extract) in
++	/// favor of AND + compare + blend on the raw word. No permute crossbar
++	/// involved at all — this is the cheapest possible instruction mix for a
++	/// 2-entry palette. Correctness: for num==1 the invariant
++	/// (1 << bitsize <= palette.Length) guarantees palLen >= 2, so indices 0/1 are
++	/// always valid — no palLen-bounds masking is needed here, unlike the general tiers.
++	/// </summary>
++	[MethodImpl(MethodImplOptions.AggressiveInlining)]
++	private static unsafe void DecodeWordAvx512_Bit1(
++		int w0Val, int w1Val, Vector512<int> pal0, Vector512<int> pal1, int* pOut)
++	{
++		Vector512<int> bc0 = Vector512.Create(w0Val);
++		Vector512<int> bc1 = Vector512.Create(w1Val);
++
++		Vector512<int> mask0Lo = Avx512F.CompareNotEqual(Avx512F.And(bc0, BitPosLo512), Vector512<int>.Zero);
++		Vector512<int> mask0Hi = Avx512F.CompareNotEqual(Avx512F.And(bc0, BitPosHi512), Vector512<int>.Zero);
++		Vector512<int> mask1Lo = Avx512F.CompareNotEqual(Avx512F.And(bc1, BitPosLo512), Vector512<int>.Zero);
++		Vector512<int> mask1Hi = Avx512F.CompareNotEqual(Avx512F.And(bc1, BitPosHi512), Vector512<int>.Zero);
++
++		Unsafe.WriteUnaligned(pOut, Avx512F.BlendVariable(pal0, pal1, mask0Lo));
++		Unsafe.WriteUnaligned(pOut + 16, Avx512F.BlendVariable(pal0, pal1, mask0Hi));
++		Unsafe.WriteUnaligned(pOut + 32, Avx512F.BlendVariable(pal0, pal1, mask1Lo));
++		Unsafe.WriteUnaligned(pOut + 48, Avx512F.BlendVariable(pal0, pal1, mask1Hi));
++	}
++
++
++	/// <summary>
++	/// Four-table VPERMI2D/VPERMT2D lookup for 32 &lt; palLen ≤ 64 (reached only on the
++	/// non-bit1 path). Computes both halves' permutes then blends on index bit 5
++	/// (idx &amp;32) to pick the correct 32-entry half-table. Entries beyond palLen are zero
++	/// in their table slot (tables are zero-initialized and filled only up to palLen),
++	/// preserving "idx &lt; palLen ? palette[idx] : 0" exactly, same as _Perm/_Perm2.
 +	/// </summary>
 +	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 +	private static unsafe void DecodeWordAvx512_Perm2x2(
@@ -972,16 +1032,24 @@ index 4d0bf91..77b505f 100644
 +		// Low 5 bits (idx & 31) are used by PermuteVar16x32x2 itself to pick within each half-table pair.
 +		Vector512<int> lowRes = Avx512F.PermuteVar16x32x2(palLo, idx, palHi);
 +		Vector512<int> highRes = Avx512F.PermuteVar16x32x2(palLo2, idx, palHi2);
-+		Vector512<int> selectHigh = Avx512F.CompareGreaterThanOrEqual(
-+			Avx512F.And(idx, Vector512.Create(32)), Vector512.Create(1)).AsInt32();
++		Vector512<int> selectHigh = Avx512F.CompareGreaterThanOrEqual(Avx512F.And(idx, Vector512.Create(32)), Vector512.Create(1));
 +		return Avx512F.BlendVariable(lowRes, highRes, selectHigh);
 +	}
 +
++	[MethodImpl(MethodImplOptions.AggressiveInlining)]
++	private static unsafe void LoadWordsBit1(int[][] planes, int word, out int w0Val, out int w1Val)
++	{
++		int[] plane = planes[0];
++		ref int baseRef = ref MemoryMarshal.GetArrayDataReference(plane);
++		w0Val = Unsafe.Add(ref baseRef, word);
++		w1Val = Unsafe.Add(ref baseRef, word + 1);
++	}
++
 +	/// <summary>
-+	/// Two-table VPERMI2D/VPERMT2D palette lookup for 16 &lt; palLen ≤ 32.
-+	/// AVX-512F baseline. Indices' low 5 bits select across the combined 32-entry
-+	/// {palLo, palHi} table; entries at index ≥ palLen are zero (tables are
-+	/// zero-initialized and only filled up to palLen), preserving the
++	/// Two-table VPERMI2D/VPERMT2D palette lookup for 16 &lt; palLen ≤ 32 (reached only
++	/// on the non-bit1 path). AVX-512F baseline. Indices' low 5 bits select across the
++	/// combined 32-entry {palLo, palHi} table; entries at index ≥ palLen are zero (tables
++	/// are zero-initialized and only filled up to palLen), preserving the
 +	/// "idx < palLen ? palette[idx] : 0" contract exactly as _Perm does for ≤16.
 +	/// </summary>
 +	[MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1079,7 +1147,10 @@ index 4d0bf91..77b505f 100644
 +		}
 +	}
 +
-+	/// <summary>Palette lookup via vpermd (Vector512.Shuffle): 16 reads per instruction, no memory.</summary>
++	/// <summary>
++	/// Palette lookup via vpermd (Vector512.Shuffle) for !bit1 &amp;&amp; palLen ≤ 16:
++	/// 16 reads per instruction, no memory.
++	/// </summary>
 +	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 +	private static unsafe void DecodeWordAvx512_Perm(
 +		int* w0, int* w1, int num, Vector512<int> palVec, int* pPalette, int palLen, int* pOut, int mixed, long uniIdx)
@@ -1106,7 +1177,10 @@ index 4d0bf91..77b505f 100644
 +		Unsafe.WriteUnaligned(pOut + 48, Vector512.Shuffle(palVec, idx3));
 +	}
 +
-+	/// <summary>General case (palette > 16): gather in pairs of 256-bit halves per ZMM index.</summary>
++	/// <summary>
++	/// General case (palette &gt; 64, reached only on the non-bit1 path): gather in pairs
++	/// of 256-bit halves per ZMM index.
++	/// </summary>
 +	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 +	private static unsafe void DecodeWordAvx512_Gather(
 +		int* w0, int* w1, int num, int* pPalette, int palLen, int* pOut, int mixed, long uniIdx)
@@ -1625,7 +1699,7 @@ index 4d0bf91..77b505f 100644
  		{
  			int num;
  			if (palette != null)
-@@ -314,19 +1534,19 @@ public class ChunkDataLayer
+@@ -314,19 +1608,19 @@ public class ChunkDataLayer
  									break;
  								}
  								num++;
@@ -1652,7 +1726,7 @@ index 4d0bf91..77b505f 100644
  						setBlockIndexCached = num;
  						setBlockValueCached = value;
  					}
-@@ -376,11 +1596,47 @@ public class ChunkDataLayer
+@@ -376,11 +1670,47 @@ public class ChunkDataLayer
  			return;
  		}
  		throw new IndexOutOfRangeException("Chunk blocks index3d must be between 0 and " + 32767 + ", was " + index3d);
@@ -1700,7 +1774,7 @@ index 4d0bf91..77b505f 100644
  		index3d /= 32;
  		int num2 = ~num;
  		if (value != 0)
-@@ -449,11 +1705,24 @@ public class ChunkDataLayer
+@@ -449,11 +1779,24 @@ public class ChunkDataLayer
  				dataBits[j][index3d] &= num2;
  			}
  		}
@@ -1725,7 +1799,7 @@ index 4d0bf91..77b505f 100644
  		{
  			int num = 1 << index3d;
  			index3d /= 32;
-@@ -464,65 +1733,69 @@ public class ChunkDataLayer
+@@ -464,65 +1807,69 @@ public class ChunkDataLayer
  				dataBits[i][index3d] &= num2;
  			}
  		}
@@ -1829,7 +1903,7 @@ index 4d0bf91..77b505f 100644
  		if (dataBits == null)
  		{
  			dataBits = new int[15][];
-@@ -535,10 +1808,11 @@ public class ChunkDataLayer
+@@ -535,10 +1882,11 @@ public class ChunkDataLayer
  		palette[1] = value;
  		Get = GetFromBits1;
  		bitsize = 1;
@@ -1841,7 +1915,7 @@ index 4d0bf91..77b505f 100644
  		if (bitsize > 6 && CleanUpPalette())
  		{
  			return paletteCount;
-@@ -555,10 +1829,11 @@ public class ChunkDataLayer
+@@ -555,10 +1903,11 @@ public class ChunkDataLayer
  		Get = selectDelegate(bitsize + 1);
  		bitsize++;
  		return num;
@@ -1853,7 +1927,7 @@ index 4d0bf91..77b505f 100644
  		if (pool.server == null)
  		{
  			if (bitsize < 14)
-@@ -653,10 +1928,11 @@ public class ChunkDataLayer
+@@ -653,10 +2002,11 @@ public class ChunkDataLayer
  			}
  		}
  		return true;
@@ -1865,7 +1939,7 @@ index 4d0bf91..77b505f 100644
  		if (paletteCount == 0)
  		{
  			return 0;
-@@ -668,10 +1944,11 @@ public class ChunkDataLayer
+@@ -668,10 +2018,11 @@ public class ChunkDataLayer
  			num2++;
  		}
  		return num2;
@@ -1877,7 +1951,7 @@ index 4d0bf91..77b505f 100644
  		int num = paletteCount - 1;
  		for (int num2 = num / 32; num2 >= 0; num2--)
  		{
-@@ -698,23 +1975,24 @@ public class ChunkDataLayer
+@@ -698,23 +2049,24 @@ public class ChunkDataLayer
  				}
  			}
  		}
@@ -1910,7 +1984,7 @@ index 4d0bf91..77b505f 100644
  		Get = GetFromBits0;
  		int num = bitsize;
  		bitsize = 0;
-@@ -731,10 +2009,11 @@ public class ChunkDataLayer
+@@ -731,10 +2083,11 @@ public class ChunkDataLayer
  		}
  		setBlockIndexCached = 0;
  		setBlockValueCached = 0;
@@ -1922,7 +1996,7 @@ index 4d0bf91..77b505f 100644
  		if (dataBits == null)
  		{
  			dataBits = new int[15][];
-@@ -746,19 +2025,21 @@ public class ChunkDataLayer
+@@ -746,19 +2099,21 @@ public class ChunkDataLayer
  		paletteCount = 1;
  		Get = GetFromBits1;
  		bitsize = 1;
@@ -1944,7 +2018,7 @@ index 4d0bf91..77b505f 100644
  		int num = 0;
  		readWriteLock.AcquireReadLock();
  		try
-@@ -774,10 +2055,11 @@ public class ChunkDataLayer
+@@ -774,10 +2129,11 @@ public class ChunkDataLayer
  			readWriteLock.ReleaseReadLock();
  		}
  		return Compression.CompressAndCombine(arrayStatic, palette, paletteCount);
@@ -1956,7 +2030,7 @@ index 4d0bf91..77b505f 100644
  		int num = 0;
  		lock (palette ?? ((object)readWriteLock))
  		{
-@@ -806,10 +2088,11 @@ public class ChunkDataLayer
+@@ -806,10 +2162,11 @@ public class ChunkDataLayer
  			paletteCompressed = Compression.Compress(palette, paletteCount, chunkdataVersion);
  		}
  		return Compression.Compress(arrayStatic, num, chunkdataVersion);
@@ -1968,7 +2042,7 @@ index 4d0bf91..77b505f 100644
  		paletteCount = 0;
  		palette = Compression.DecompressCombined(layerCompressed, ref dataBits, ref paletteCount, pool.NewData);
  		if (palette != null)
-@@ -827,10 +2110,11 @@ public class ChunkDataLayer
+@@ -827,10 +2184,11 @@ public class ChunkDataLayer
  		{
  			bitsize = 0;
  		}
@@ -1980,7 +2054,7 @@ index 4d0bf91..77b505f 100644
  		palette = Compression.DecompressToInts(paletteCompressed, ref paletteCount);
  		if (palette != null)
  		{
-@@ -872,10 +2156,11 @@ public class ChunkDataLayer
+@@ -872,10 +2230,11 @@ public class ChunkDataLayer
  			Get = GetFromBits0;
  			bitsize = 0;
  		}
@@ -1992,7 +2066,7 @@ index 4d0bf91..77b505f 100644
  		if (dataBits == null)
  		{
  			dataBits = new int[15][];
-@@ -910,39 +2195,195 @@ public class ChunkDataLayer
+@@ -910,39 +2269,195 @@ public class ChunkDataLayer
  		{
  			pool.FreeArrays(this);
  		}
@@ -2198,7 +2272,7 @@ index 4d0bf91..77b505f 100644
  		readWriteLock.AcquireReadLock();
  		try
  		{
-@@ -950,54 +2391,48 @@ public class ChunkDataLayer
+@@ -950,54 +2465,48 @@ public class ChunkDataLayer
  			for (int i = 0; i < blocksOut.Length; i += 32)
  			{
  				int num2 = i / 32;
@@ -2266,7 +2340,7 @@ index 4d0bf91..77b505f 100644
  	{
  		int num = -1;
  		for (int i = 0; i < bitsize; i++)
-@@ -1005,10 +2440,11 @@ public class ChunkDataLayer
+@@ -1005,10 +2514,11 @@ public class ChunkDataLayer
  			num &= (((needle & (1 << i)) != 0) ? dataBits[i][intIndex] : (~dataBits[i][intIndex]));
  		}
  		return num;
@@ -2278,7 +2352,7 @@ index 4d0bf91..77b505f 100644
  		for (int i = 0; i < paletteCount; i++)
  		{
  			if (palette[i] != id)
-@@ -1025,18 +2461,20 @@ public class ChunkDataLayer
+@@ -1025,18 +2535,20 @@ public class ChunkDataLayer
  			return false;
  		}
  		return false;
@@ -2299,7 +2373,7 @@ index 4d0bf91..77b505f 100644
  		int num = ~mask;
  		readWriteLock.AcquireWriteLock();
  		for (int i = 0; i < bitsize; i++)
-@@ -1051,10 +2489,11 @@ public class ChunkDataLayer
+@@ -1051,10 +2563,11 @@ public class ChunkDataLayer
  			}
  		}
  		readWriteLock.ReleaseWriteLock();
@@ -2311,7 +2385,7 @@ index 4d0bf91..77b505f 100644
  		int num = paletteCount - 1;
  		readWriteLock.AcquireWriteLock();
  		int num2 = bitsize;
-@@ -1088,10 +2527,195 @@ public class ChunkDataLayer
+@@ -1088,10 +2601,195 @@ public class ChunkDataLayer
  		palette[deletePosition] = palette[num];
  		paletteCount--;
  		readWriteLock.ReleaseWriteLock();
@@ -2507,7 +2581,7 @@ index 4d0bf91..77b505f 100644
  		int[] array = palette;
  		if (array == null)
  		{
-@@ -1104,6 +2728,6 @@ public class ChunkDataLayer
+@@ -1104,6 +2802,6 @@ public class ChunkDataLayer
  			{
  				array[i] = 0;
  			}
