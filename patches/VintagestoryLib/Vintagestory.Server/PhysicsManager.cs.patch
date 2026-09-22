@@ -375,7 +375,7 @@ index 2c2605d..89fa55a 100644
  	{
 -		List<ConnectedClient> list = (ClientList = new List<ConnectedClient>());
 +		// Stratum: reuse the existing list instead of allocating a new one each tick.
-+		List<ConnectedClient> list = ClientList;
++		List<ConnectedClient> list = (StratumRuntime.Config.Performance.Physics.ClientListReuseEnabled ? ClientList : null);
 +		if (list == null)
 +		{
 +			list = new List<ConnectedClient>(values.Count);
@@ -475,7 +475,7 @@ index 2c2605d..89fa55a 100644
  				{
  					list2.Add(entityId);
  				}
-@@ -563,19 +790,52 @@ public class PhysicsManager : LoadBalancedTask
+@@ -563,19 +790,53 @@ public class PhysicsManager : LoadBalancedTask
  				}
  				list.Add(item2);
  			}
@@ -483,13 +483,14 @@ index 2c2605d..89fa55a 100644
  		}
 +		// Stratum start: tracking hysteresis. Before despawning a tracked entity, check if it's
 +		// still within the outer radius. This prevents oscillation at the tracking boundary.
++		bool stratumHysteresis = StratumRuntime.Config.Performance.Physics.EntityTrackingHysteresisEnabled;
 +		double outerRangeSq = es.trackingRangeSq * StratumTrackingOuterRangeMultiplier;
 +		double clientX = client.Position.X;
 +		double clientY = client.Position.Y;
 +		double clientZ = client.Position.Z;
  		foreach (long item3 in trackedEntities)
  		{
-+			if (server.LoadedEntities.TryGetValue(item3, out Entity trackedEntity) && !trackedEntity.ShouldDespawn)
++			if (stratumHysteresis && server.LoadedEntities.TryGetValue(item3, out Entity trackedEntity) && !trackedEntity.ShouldDespawn)
 +			{
 +				// Stratum #312: hidden wins over the hysteresis keep-alive.
 +				if (StratumStaffCommandState.ShouldHideEntityFromClient(trackedEntity, client))
@@ -528,7 +529,7 @@ index 2c2605d..89fa55a 100644
  		list2.Clear();
  		foreach (Entity item4 in list3)
  		{
-@@ -593,61 +853,166 @@ public class PhysicsManager : LoadBalancedTask
+@@ -593,61 +854,166 @@ public class PhysicsManager : LoadBalancedTask
  		list3.Clear();
  	}
  
@@ -719,7 +720,7 @@ index 2c2605d..89fa55a 100644
  	public void GatherUpdatePacketsFromAllThreads()
  	{
  		Dictionary<long, Packet_EntityAttributes> dict = entitiesFullUpdate[0];
-@@ -682,10 +1047,16 @@ public class PhysicsManager : LoadBalancedTask
+@@ -682,10 +1048,16 @@ public class PhysicsManager : LoadBalancedTask
  			{
  				try
  				{
@@ -736,7 +737,7 @@ index 2c2605d..89fa55a 100644
  						{
  							list.Add(value);
  						}
-@@ -728,18 +1099,62 @@ public class PhysicsManager : LoadBalancedTask
+@@ -728,18 +1100,62 @@ public class PhysicsManager : LoadBalancedTask
  	{
  		if (entity is EntityPlayer)
  		{
@@ -801,7 +802,7 @@ index 2c2605d..89fa55a 100644
  			if (entityAgent != null)
  			{
  				entityAgent.Controls.Dirty = false;
-@@ -747,10 +1162,106 @@ public class PhysicsManager : LoadBalancedTask
+@@ -747,10 +1163,106 @@ public class PhysicsManager : LoadBalancedTask
  			entity.tagsDirty = false;
  		}
  		CompletePositionUpdate(entity);
@@ -908,7 +909,7 @@ index 2c2605d..89fa55a 100644
  		EntityTagPacket result = null;
  		SyncedTreeAttribute watchedAttributes = entity.WatchedAttributes;
  		if (watchedAttributes.AllDirty)
-@@ -779,82 +1290,231 @@ public class PhysicsManager : LoadBalancedTask
+@@ -779,82 +1291,231 @@ public class PhysicsManager : LoadBalancedTask
  		}
  		watchedAttributes.MarkClean();
  		return result;
@@ -1161,7 +1162,7 @@ index 2c2605d..89fa55a 100644
  			if (list2.Count > 0)
  			{
  				BulkAnimationPacket message = new BulkAnimationPacket
-@@ -872,35 +1532,66 @@ public class PhysicsManager : LoadBalancedTask
+@@ -872,35 +1533,66 @@ public class PhysicsManager : LoadBalancedTask
  				AnimationsAndTagsChannel.SendPacket(item2, client.Player);
  			}
  		}
@@ -1230,7 +1231,7 @@ index 2c2605d..89fa55a 100644
  					flag = true;
  				}
  			}
-@@ -990,11 +1681,14 @@ public class PhysicsManager : LoadBalancedTask
+@@ -990,11 +1682,14 @@ public class PhysicsManager : LoadBalancedTask
  		return ServerPackets.getEntityPositionPacket(entity.Pos, entity, 1);
  	}
  
@@ -1246,7 +1247,7 @@ index 2c2605d..89fa55a 100644
  		{
  			Id = 80,
  			EntityPosition = entityPosition
-@@ -1007,10 +1701,16 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1007,10 +1702,16 @@ public class PhysicsManager : LoadBalancedTask
  			if (client.State.ConnectedOrPlaying() && client.Entityplayer != null)
  			{
  				EntityPos pos2 = client.Entityplayer.Pos;
@@ -1263,7 +1264,7 @@ index 2c2605d..89fa55a 100644
  					server.SendPacket(client.Id, packet);
  				}
  			}
-@@ -1026,16 +1726,29 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1026,16 +1727,29 @@ public class PhysicsManager : LoadBalancedTask
  		if (threadNumber == 0)
  		{
  			threadNumber = 1;
@@ -1298,7 +1299,7 @@ index 2c2605d..89fa55a 100644
  		Dictionary<long, AnimationPacket> dictionary2 = entitiesAnimPackets[threadNumber - 1];
  		dictionary.Clear();
  		dictionary2.Clear();
-@@ -1097,10 +1810,19 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1097,10 +1811,19 @@ public class PhysicsManager : LoadBalancedTask
  		try
  		{
  			int num5 = -1;
@@ -1318,7 +1319,7 @@ index 2c2605d..89fa55a 100644
  				int num6 = (ticksToDo - num5 + 1) % 2;
  				num5 += num6;
  				bool flag2 = num5 == ticksToDo - 1;
-@@ -1108,20 +1830,113 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1108,20 +1831,113 @@ public class PhysicsManager : LoadBalancedTask
  				bool forceUpdate = (num5 + currentTick) % 30 <= num6;
  				for (int j = num3; j < num4; j++)
  				{
@@ -1435,7 +1436,7 @@ index 2c2605d..89fa55a 100644
  						{
  							entity.PositionTicked = true;
  						}
-@@ -1196,49 +2011,153 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1196,49 +2012,153 @@ public class PhysicsManager : LoadBalancedTask
  		if (doBuildAttributes)
  		{
  			eFullUpdate = entitiesFullUpdate[0];
@@ -1596,7 +1597,7 @@ index 2c2605d..89fa55a 100644
  			SendPositionsAndAnimations(dictionary, dictionary2, 0, doBuildAttributes);
  		}
  		dictionary.Clear();
-@@ -1262,11 +2181,25 @@ public class PhysicsManager : LoadBalancedTask
+@@ -1262,11 +2182,25 @@ public class PhysicsManager : LoadBalancedTask
  
  	public void StartWorkerThread(int threadNum)
  	{

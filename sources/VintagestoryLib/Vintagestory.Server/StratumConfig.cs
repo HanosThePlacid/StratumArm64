@@ -376,6 +376,13 @@ internal class StratumHardeningConfig
 	public bool InventoryGuards { get; set; } = true;
 
 	public bool EntityGuards { get; set; }
+
+	// Drop entity packets aimed at an entity further away than the sender's picking range plus
+	// slack. Mods that drive entities from a distance (teleporters, remote UIs) need this off.
+	public bool EntityPacketRangeGuard { get; set; } = true;
+
+	// Same guard for block entity packets, measured from the sender's eyes to the block.
+	public bool BlockEntityPacketRangeGuard { get; set; } = true;
 }
 
 internal class StratumPacketLimitsConfig
@@ -1115,6 +1122,16 @@ internal class StratumPhysicsConfig
 	// When true, evenly split tickables across all physics threads instead of vanilla's
 	// "thread 1 gets the first 480 + a share" partition (which overloads thread 1).
 	public bool EvenThreadPartition { get; set; } = true;
+
+	// Entity tracking hysteresis: a tracked entity keeps its tracking slot until it passes an
+	// outer radius 10% beyond the tracking range, instead of despawning the moment it crosses
+	// the exact boundary. Stops spawn/despawn oscillation for entities sitting on the edge.
+	// Set false for vanilla's hard cutoff.
+	public bool EntityTrackingHysteresisEnabled { get; set; } = true;
+
+	// Reuse the per-tick client list instead of allocating a fresh one every physics tick.
+	// Set false for vanilla's allocate-per-tick behaviour.
+	public bool ClientListReuseEnabled { get; set; } = true;
 
 	// Stratum: Paper-style Entity Activation Range for PhysicsManager.
 	// Far-tracked entities (IsTracked == 1, >50 blocks from any player) tick threadsafe
