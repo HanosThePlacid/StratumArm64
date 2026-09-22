@@ -8,8 +8,18 @@ namespace Vintagestory.API.Server;
 // can use it.
 public static class StratumPlayerGroups
 {
+	// Stratum #335: set by the server once group kinds exist. Returns false for a group whose
+	// kind is marked CountsAsSameSide=false, so an administrative group ("newcomers", "event
+	// signups") no longer switches friendly fire off between its members. Left null, every
+	// group counts, which is the behaviour this helper had before kinds.
+	public static System.Func<int, bool> StratumGroupCountsAsSameSide;
+
+	// Stratum #335: true when the two groups are allied and the server counts allies as one
+	// side. Left null, no group is allied with any other.
+	public static System.Func<int, int, bool> StratumGroupsAreAllied;
+
 	// True when both players hold a live membership in the same player-created group, that is
-	// a group made with /group create.
+	// a group made with /group create, or in two groups the server has allied.
 	public static bool SharesGroup(IPlayer a, IPlayer b)
 	{
 		if (a is not IServerPlayer serverA || b is not IServerPlayer serverB)
@@ -42,7 +52,7 @@ public static class StratumPlayerGroups
 
 		foreach (KeyValuePair<int, PlayerGroupMembership> membership in a)
 		{
-			if (membership.Key <= 0 || !IsLiveMembership(membership.Value))
+			if (membership.Key <= 0 || !IsLiveMembership(membership.Value) || !CountsAsSameSide(membership.Key))
 			{
 				continue;
 			}
@@ -53,7 +63,41 @@ public static class StratumPlayerGroups
 			}
 		}
 
+		if (StratumGroupsAreAllied == null)
+		{
+			return false;
+		}
+
+		// Stratum #335: only reached when the two share no group outright. Both membership maps
+		// hold a handful of entries, so this walks them rather than building a set: this runs on
+		// the melee damage path and should not allocate.
+		foreach (KeyValuePair<int, PlayerGroupMembership> mine in a)
+		{
+			if (mine.Key <= 0 || !IsLiveMembership(mine.Value) || !CountsAsSameSide(mine.Key))
+			{
+				continue;
+			}
+
+			foreach (KeyValuePair<int, PlayerGroupMembership> theirs in b)
+			{
+				if (theirs.Key <= 0 || !IsLiveMembership(theirs.Value) || !CountsAsSameSide(theirs.Key))
+				{
+					continue;
+				}
+
+				if (StratumGroupsAreAllied(mine.Key, theirs.Key))
+				{
+					return true;
+				}
+			}
+		}
+
 		return false;
+	}
+
+	private static bool CountsAsSameSide(int groupUid)
+	{
+		return StratumGroupCountsAsSameSide == null || StratumGroupCountsAsSameSide(groupUid);
 	}
 
 	private static bool IsLiveMembership(PlayerGroupMembership membership)

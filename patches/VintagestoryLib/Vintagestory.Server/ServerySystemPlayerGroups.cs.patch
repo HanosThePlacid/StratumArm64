@@ -1,0 +1,188 @@
+diff --git a/VintagestoryLib/Vintagestory.Server/ServerySystemPlayerGroups.cs b/VintagestoryLib/Vintagestory.Server/ServerySystemPlayerGroups.cs
+index 674b9fc..00def60 100644
+--- a/VintagestoryLib/Vintagestory.Server/ServerySystemPlayerGroups.cs
++++ b/VintagestoryLib/Vintagestory.Server/ServerySystemPlayerGroups.cs
+@@ -132,10 +132,18 @@ public class ServerySystemPlayerGroups : ServerSystem
+ 			.WithDescription("Allows a Mod/admin to remove a player from a group")
+ 			.WithExamples("Syntax: /group removeplayer [groupname] [playername]")
+ 			.RequiresPlayer()
+ 			.WithArgs(parsers.Word("groupName"), parsers.Word("playerName"))
+ 			.HandleWith(CmdRemovePlayerFromGroup)
++			.EndSubCommand()
++			// Stratum: issue #335 staff group administration (kinds, locks, roster freeze, relations, tags).
++			.BeginSubCommand("admin")
++			.RequiresPrivilege(CmdStratumGroups.RequiredPrivilege)
++			.WithDescription("Stratum staff administration of a player group")
++			.WithExamples("Syntax: /group admin [add|remove|lock|unlock|freeze|kind|tag|relation|info|kinds] [groupname] ...")
++			.WithArgs(parsers.OptionalWordRange("action", "add", "remove", "lock", "unlock", "freeze", "kind", "tag", "relation", "info", "kinds"), parsers.OptionalWord("groupName"), parsers.OptionalWord("arg1"), parsers.OptionalWord("arg2"))
++			.HandleWith(new CmdStratumGroups(server).Handle)
+ 			.EndSubCommand();
+ 		server.api.ChatCommands.Create("groupinvite").WithDescription("Enables or disables group invites to be sent to you").RequiresPrivilege(Privilege.chat)
+ 			.RequiresPlayer()
+ 			.WithArgs(parsers.Bool("enable"))
+ 			.HandleWith(CmdNoInvite);
+@@ -147,10 +155,14 @@ public class ServerySystemPlayerGroups : ServerSystem
+ 		string text2 = args[1] as string;
+ 		IServerPlayerData playerDataByLastKnownName = server.PlayerDataManager.GetPlayerDataByLastKnownName(text2);
+ 		PlayerGroup playerGroupByName = server.PlayerDataManager.GetPlayerGroupByName(text);
+ 		if (playerGroupByName != null && playerDataByLastKnownName != null)
+ 		{
++			// Stratum: issue #335 a staff removal is deliberate, so it drops any membership lock
++			// instead of being refused by it, and lands in the audit log.
++			StratumGroupPolicy.ClearLock(server, server.PlayerDataManager.PlayerDataByUid[playerDataByLastKnownName.PlayerUID], playerGroupByName.Uid);
++			StratumGroupPolicy.LogAudit("group removeplayer group=" + playerGroupByName.Name + " player=" + text2 + " actor=" + args.Caller.GetName());
+ 			server.PlayerDataManager.PlayerDataByUid[playerDataByLastKnownName.PlayerUID].LeaveGroup(playerGroupByName);
+ 			server.PlayerDataManager.playerDataDirty = true;
+ 			if (server.PlayersByUid.TryGetValue(playerDataByLastKnownName.PlayerUID, out var value))
+ 			{
+ 				SendPlayerGroups(value);
+@@ -169,10 +181,23 @@ public class ServerySystemPlayerGroups : ServerSystem
+ 		EnumPlayerGroupMemberShip level = (EnumPlayerGroupMemberShip)args[2];
+ 		IServerPlayerData playerDataByLastKnownName = server.PlayerDataManager.GetPlayerDataByLastKnownName(text2);
+ 		PlayerGroup playerGroupByName = server.PlayerDataManager.GetPlayerGroupByName(text);
+ 		if (playerGroupByName != null && playerDataByLastKnownName != null)
+ 		{
++			// Stratum: issue #335 kind rules also apply to the vanilla staff add, so /group addplayer
++			// and /group admin add cannot disagree about exclusive kinds.
++			ServerPlayerData stratumTargetData = server.PlayerDataManager.PlayerDataByUid[playerDataByLastKnownName.PlayerUID];
++			if (!StratumGroupPolicy.TryStaffAdd(server, stratumTargetData, playerGroupByName, out PlayerGroup stratumDisplaced, out string stratumError))
++			{
++				return TextCommandResult.Error(stratumError);
++			}
++			if (stratumDisplaced != null)
++			{
++				stratumTargetData.LeaveGroup(stratumDisplaced);
++				stratumDisplaced.OnlinePlayers.RemoveAll((IPlayer onlinePlayer) => onlinePlayer.PlayerUID == stratumTargetData.PlayerUID);
++			}
++			StratumGroupPolicy.LogAudit("group addplayer group=" + playerGroupByName.Name + " player=" + text2 + " level=" + level + " actor=" + args.Caller.GetName());
+ 			PlayerGroupMembership membership = server.PlayerDataManager.PlayerDataByUid[playerDataByLastKnownName.PlayerUID].JoinGroup(playerGroupByName, level);
+ 			server.PlayerDataManager.playerDataDirty = true;
+ 			if (server.PlayersByUid.TryGetValue(playerDataByLastKnownName.PlayerUID, out var value))
+ 			{
+ 				SendPlayerGroup(value, playerGroupByName, membership);
+@@ -258,10 +283,11 @@ public class ServerySystemPlayerGroups : ServerSystem
+ 			Name = text,
+ 			OwnerUID = playerUID
+ 		};
+ 		server.PlayerDataManager.AddPlayerGroup(playerGroup);
+ 		playerGroup.Md5Identifier = GameMath.Md5Hash(playerGroup.Uid + playerUID);
++		StratumGroupPolicy.OnGroupCreated(server, playerGroup); // Stratum: issue #335 stamp Groups.DefaultKind onto new groups
+ 		server.PlayerDataManager.PlayerDataByUid[playerUID].JoinGroup(playerGroup, EnumPlayerGroupMemberShip.Owner);
+ 		playerGroup.OnlinePlayers.Add(serverPlayer);
+ 		SendPlayerGroup(serverPlayer, playerGroup);
+ 		GotoGroup(serverPlayer, playerGroup.Uid);
+ 		server.PlayerDataManager.playerDataDirty = true;
+@@ -297,10 +323,16 @@ public class ServerySystemPlayerGroups : ServerSystem
+ 		}
+ 		if (!HasPlayerPrivilege(serverPlayer, num, EnumPlayerGroupPrivilege.Disband))
+ 		{
+ 			return Error(args, "You must be the owner of the group to disband it.");
+ 		}
++		// Stratum: issue #335 a frozen roster cannot be emptied by disbanding it either.
++		if (PlayerGroupsByUid.TryGetValue(num, out PlayerGroup stratumDisbandGroup)
++			&& !StratumGroupPolicy.TryRosterChange(stratumDisbandGroup, "disband it", out string stratumDisbandError))
++		{
++			return TextCommandResult.Error(stratumDisbandError);
++		}
+ 		if (DisbandRequests.ContainsKey(num))
+ 		{
+ 			return Error(args, "Disband already requested, type /group confirmdisband [groupname] to confirm.");
+ 		}
+ 		DisbandRequests.Add(num, playerUID);
+@@ -325,10 +357,15 @@ public class ServerySystemPlayerGroups : ServerSystem
+ 			return Error(args, "You must be the owner of the group to disband it.");
+ 		}
+ 		if (DisbandRequests.ContainsKey(num) && DisbandRequests[num] == playerUID)
+ 		{
+ 			PlayerGroup playerGroup = PlayerGroupsByUid[num];
++			// Stratum: issue #335 re-checked here, because the freeze can land between the two steps.
++			if (!StratumGroupPolicy.TryRosterChange(playerGroup, "disband it", out string stratumConfirmError))
++			{
++				return TextCommandResult.Error(stratumConfirmError);
++			}
+ 			server.PlayerDataManager.RemovePlayerGroup(PlayerGroupsByUid[num]);
+ 			server.PlayerDataManager.playerGroupsDirty = true;
+ 			server.PlayerDataManager.playerDataDirty = true;
+ 			foreach (IServerPlayer onlinePlayer in playerGroup.OnlinePlayers)
+ 			{
+@@ -397,10 +434,15 @@ public class ServerySystemPlayerGroups : ServerSystem
+ 		if (value == null || value.JoinPolicy != "everyone")
+ 		{
+ 			return Error(args, "No such group found or the invite policy is invite only");
+ 		}
+ 		int uid = value.Uid;
++		// Stratum: issue #335 roster freeze, exclusive kinds and member caps gate a player-initiated join.
++		if (!StratumGroupPolicy.TryPlayerJoin(server, ((ServerPlayer)serverPlayer).serverdata, value, out string stratumJoinError))
++		{
++			return TextCommandResult.Error(stratumJoinError);
++		}
+ 		PlayerGroupMembership membership = ((ServerPlayer)serverPlayer).serverdata.JoinGroup(value, EnumPlayerGroupMemberShip.Member);
+ 		server.PlayerDataManager.playerDataDirty = true;
+ 		PlayerGroupsByUid[uid].OnlinePlayers.Add(serverPlayer);
+ 		SendPlayerGroup(serverPlayer, PlayerGroupsByUid[uid], membership);
+ 		GotoGroup(serverPlayer, uid);
+@@ -452,10 +494,16 @@ public class ServerySystemPlayerGroups : ServerSystem
+ 		}
+ 		if (!HasPlayerPrivilege(serverPlayer, num, EnumPlayerGroupPrivilege.Invite))
+ 		{
+ 			return Error(args, "You must be the op or owner of the group to invite players.");
+ 		}
++		// Stratum: issue #335 a frozen roster takes no new invites.
++		if (PlayerGroupsByUid.TryGetValue(num, out PlayerGroup stratumInviteGroup)
++			&& !StratumGroupPolicy.TryRosterChange(stratumInviteGroup, "invite players", out string stratumInviteError))
++		{
++			return TextCommandResult.Error(stratumInviteError);
++		}
+ 		ConnectedClient clientByPlayername = server.GetClientByPlayername(text);
+ 		if (clientByPlayername == null || clientByPlayername.Player == null)
+ 		{
+ 			return Error(args, "Can't invite. Player name {0} does not exist or is not online", text);
+ 		}
+@@ -498,10 +546,15 @@ public class ServerySystemPlayerGroups : ServerSystem
+ 			ServerPlayerData serverdata = ((ServerPlayer)serverPlayer).serverdata;
+ 			if (serverdata.PlayerGroupMemberShips.ContainsKey(result))
+ 			{
+ 				serverPlayer.SendMessage(args.Caller.FromChatGroupId, Lang.GetL(serverPlayer.LanguageCode, "Can't accept invite, you are already joined this player group"), EnumChatType.CommandError);
+ 			}
++			else if (!StratumGroupPolicy.TryPlayerJoin(server, serverdata, value, out string stratumAcceptError))
++			{
++				// Stratum: issue #335 an invite does not bypass the join rules.
++				return TextCommandResult.Error(stratumAcceptError);
++			}
+ 			else
+ 			{
+ 				PlayerGroupMembership membership = serverdata.JoinGroup(value, EnumPlayerGroupMemberShip.Member);
+ 				server.PlayerDataManager.playerDataDirty = true;
+ 				PlayerGroupsByUid[result].OnlinePlayers.Add(serverPlayer);
+@@ -551,10 +604,15 @@ public class ServerySystemPlayerGroups : ServerSystem
+ 			return Error(args, "No such group membership found, perhaps you already left this group.");
+ 		}
+ 		if (PlayerGroupsByUid.ContainsKey(num))
+ 		{
+ 			PlayerGroup playerGroup = PlayerGroupsByUid[num];
++			// Stratum: issue #335 a membership lock or a frozen roster keeps the player in the group.
++			if (!StratumGroupPolicy.TryPlayerLeave(server, serverdata, playerGroup, out string stratumLeaveError))
++			{
++				return TextCommandResult.Error(stratumLeaveError);
++			}
+ 			serverPlayer.SendMessage((args.Caller.FromChatGroupId == num) ? GlobalConstants.ServerInfoChatGroup : args.Caller.FromChatGroupId, Lang.GetL(serverPlayer.LanguageCode, "You have left the group {0}", playerGroup.Name), EnumChatType.CommandSuccess);
+ 			serverdata.LeaveGroup(playerGroup);
+ 			server.PlayerDataManager.playerDataDirty = true;
+ 			SendPlayerGroups(serverPlayer);
+ 			playerGroup.OnlinePlayers.Remove(serverPlayer);
+@@ -661,10 +719,15 @@ public class ServerySystemPlayerGroups : ServerSystem
+ 				}
+ 				if (!HasPlayerPrivilege(player, num, EnumPlayerGroupPrivilege.Kick, value2.PlayerUID))
+ 				{
+ 					return Error(args, "You must be the op or owner to kick this player (and ops can only be kicked by owner).");
+ 				}
++				// Stratum: issue #335 a group op cannot kick a locked member out of a lock, or move a frozen roster.
++				if (!StratumGroupPolicy.TryPlayerKick(server, value2, playerGroup, out string stratumKickError))
++				{
++					return TextCommandResult.Error(stratumKickError);
++				}
+ 				value2.LeaveGroup(playerGroup);
+ 				server.PlayerDataManager.playerDataDirty = true;
+ 				if (server.PlayersByUid.TryGetValue(value2.PlayerUID, out var value))
+ 				{
+ 					PlayerGroupsByUid[num].OnlinePlayers.Remove(value);
