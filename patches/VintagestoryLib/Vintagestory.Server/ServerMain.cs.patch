@@ -331,7 +331,7 @@ index 6f69cd3..a654aca 100644
  	private void HandleLeave(Packet_Client packet, ConnectedClient client)
  	{
  		DisconnectPlayer(client, (packet.Leave.Reason == 1) ? Lang.Get("The Players client crashed") : null);
-@@ -787,16 +939,64 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
+@@ -787,16 +939,66 @@ public sealed class ServerMain : GameMain, IServerWorldAccessor, IWorldAccessor,
  	}
  
  	private void HandleEntityPacket(Packet_Client packet, ConnectedClient client)
@@ -376,6 +376,8 @@ index 6f69cd3..a654aca 100644
 +			return true;
 +		}
 +
++		// Stratum: Hardening.EntityPacketRangeGuard turns this reach check off for mods that
++		// drive entities from beyond pick range (#307).
 +		if (!StratumRuntime.Config.Hardening.EntityPacketRangeGuard)
 +		{
 +			return true;

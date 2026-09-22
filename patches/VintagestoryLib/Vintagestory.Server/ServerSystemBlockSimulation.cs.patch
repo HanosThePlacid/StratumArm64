@@ -47,7 +47,7 @@ index 6b3cdd0..28ea78f 100644
  	{
  		server.RegisterGameTickListener(UpdateEvery100ms, 100);
  		server.PacketHandlers[3] = HandleBlockPlaceOrBreak;
-@@ -319,13 +331,234 @@ public class ServerSystemBlockSimulation : ServerSystem
+@@ -319,13 +331,231 @@ public class ServerSystemBlockSimulation : ServerSystem
  	}
  
  	private void HandleBlockEntityPacket(Packet_Client packet, ConnectedClient client)
@@ -91,7 +91,9 @@ index 6b3cdd0..28ea78f 100644
 +			return false;
 +		}
 +
-+		if (!IsBlockEntityPacketInRange(player, pos))
++		// Stratum: #307 - Hardening.BlockEntityPacketRangeGuard gates this packet path only. The
++		// dev command block path keeps its range check unconditionally.
++		if (StratumRuntime.Config.Hardening.BlockEntityPacketRangeGuard && !IsBlockEntityPacketInRange(player, pos))
 +		{
 +			ServerMain.Logger.Audit("{0} tried to send a block entity packet out of range at {1}", player.PlayerName, pos);
 +			StratumAnticheatReporter.RecordBlockEntityOutOfRange(server, player, pos);
@@ -159,11 +161,6 @@ index 6b3cdd0..28ea78f 100644
 +
 +	private static bool IsBlockEntityPacketInRange(ServerPlayer player, BlockPos pos)
 +	{
-+		if (!StratumRuntime.Config.Hardening.BlockEntityPacketRangeGuard)
-+		{
-+			return true;
-+		}
-+
 +		double maxRange = player.WorldData.PickingRange + StratumBlockEntityPacketRangeSlack;
 +		FastVec3d eyes = player.Entity.Pos.XYZFast.Add(player.Entity.LocalEyePos);
 +		double dx = eyes.X - (pos.X + 0.5);

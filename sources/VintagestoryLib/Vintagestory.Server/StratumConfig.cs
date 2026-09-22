@@ -381,7 +381,10 @@ internal class StratumHardeningConfig
 	// slack. Mods that drive entities from a distance (teleporters, remote UIs) need this off.
 	public bool EntityPacketRangeGuard { get; set; } = true;
 
-	// Same guard for block entity packets, measured from the sender's eyes to the block.
+	// Same guard for block entity packets, measured from the sender's eyes to the block. Vanilla
+	// range-checks most of its own block entity handlers but not all of them, so with this off a
+	// few (locust nests among them) accept an inventory-less packet from anywhere in the loaded
+	// world. The dev command block path keeps its range check either way.
 	public bool BlockEntityPacketRangeGuard { get; set; } = true;
 }
 
