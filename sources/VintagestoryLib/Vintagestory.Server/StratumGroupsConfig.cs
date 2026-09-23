@@ -91,6 +91,11 @@ internal sealed class StratumGroupsConfig
 	// members. False keeps allies purely informational.
 	public bool AlliesCountAsSameSide { get; set; } = true;
 
+	// Whether /group info shows a group's kind, tag, frozen roster and relations to ordinary
+	// players. Allies already decide whether a player's weapon lands, and tags are on nametags,
+	// so hiding this mostly hides it from the people it costs. False keeps it to staff.
+	public bool ShowStateToPlayers { get; set; } = true;
+
 	// Group tag rendering. The tag itself is per group (/group admin tag), with a per-kind
 	// fallback. These only decide where a tag that exists gets shown.
 	public bool ShowTagInChat { get; set; } = true;

@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerySystemPlayerGroups.cs b/VintagestoryLib/Vintagestory.Server/ServerySystemPlayerGroups.cs
-index 674b9fc..00def60 100644
+index 674b9fc..57891d6 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerySystemPlayerGroups.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerySystemPlayerGroups.cs
 @@ -132,10 +132,18 @@ public class ServerySystemPlayerGroups : ServerSystem
@@ -170,7 +170,21 @@ index 674b9fc..00def60 100644
  			server.PlayerDataManager.playerDataDirty = true;
  			SendPlayerGroups(serverPlayer);
  			playerGroup.OnlinePlayers.Remove(serverPlayer);
-@@ -661,10 +719,15 @@ public class ServerySystemPlayerGroups : ServerSystem
+@@ -623,10 +681,13 @@ public class ServerySystemPlayerGroups : ServerSystem
+ 				num++;
+ 				stringBuilder.Append(value2.LastKnownPlayername);
+ 			}
+ 		}
+ 		stringBuilder.AppendLine();
++		// Stratum: issue #335 show the group's kind, tag, frozen roster and relations here too,
++		// so a player can read the state that governs them instead of only staff seeing it.
++		stringBuilder.Append(StratumGroupPolicy.DescribeForPlayer(server, value, args.Caller.Player?.PlayerUID));
+ 		return TextCommandResult.Success(stringBuilder.ToString());
+ 	}
+ 
+ 	private TextCommandResult CmdKickFromgroup(TextCommandCallingArgs args)
+ 	{
+@@ -661,10 +722,15 @@ public class ServerySystemPlayerGroups : ServerSystem
  				}
  				if (!HasPlayerPrivilege(player, num, EnumPlayerGroupPrivilege.Kick, value2.PlayerUID))
  				{

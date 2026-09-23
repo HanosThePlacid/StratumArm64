@@ -120,6 +120,33 @@ no accepted invites, no leaves, no kicks, no disband. Staff commands still go
 through. This is the blunt instrument for the length of a tournament; locks are
 the per-player version.
 
+## What players see
+
+`/group admin` is staff only, but the state it writes governs ordinary players, so the
+vanilla `/group info [group]` carries the Stratum half of it too:
+
+```
+Created: 9/22/2026 7:41:02 PM
+Created by: Alice
+Members: Alice, Bob
+Kind: faction, one at a time
+Tag: [RED]
+Roster: frozen - no joins, invites, leaves or kicks until staff unfreeze it
+Relations: BlueTeam=enemy, Greens=ally
+Your membership: locked by staff until 2026-09-23 18:00 UTC - you cannot leave and cannot be kicked
+```
+
+Every one of those lines is omitted when it has nothing to say, so a group with no kind,
+no tag, an open roster and no relations prints exactly what vanilla printed.
+
+Relations are public on purpose. An ally relation decides whether a player's weapon lands
+on someone, so it is already discoverable by swinging at them, and a tag is already on
+their nametag. Saying it outright beats making players reverse-engineer it from combat.
+Set `Groups.ShowStateToPlayers` to `false` to keep the whole block to staff.
+
+`Your membership` is the caller's own lock only. Who else is pinned into a group is staff
+business and stays in `/group admin info`.
+
 ## Relations
 
 `/group admin relation <group> <other> ally|enemy|neutral` records how two
@@ -157,6 +184,7 @@ All under `Groups` in `stratum.json`:
 | `Kinds` | one example `faction` entry, used by nothing until a group is given it | Kind definitions, see above. |
 | `RelationsEnabled` | `true` | Whether `/group admin relation` works. |
 | `AlliesCountAsSameSide` | `true` | Whether allied groups count as one side for friendly fire. |
+| `ShowStateToPlayers` | `true` | Whether `/group info` shows kind, tag, roster state and relations to ordinary players. |
 | `ShowTagInChat` | `true` | Render group tags in chat. |
 | `ShowTagInNametag` | `true` | Render group tags on nametags. |
 | `TagFormat` | `[{tag}]` | Must contain `{tag}`. |

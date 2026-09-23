@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Text;
 using Newtonsoft.Json;
 using Vintagestory.API.Common;
 using Vintagestory.API.Server;
@@ -494,6 +495,77 @@ internal static class StratumGroupPolicy
 		}
 
 		return result;
+	}
+
+	/// <summary>
+	/// The Stratum half of <c>/group info</c>, for ordinary players. Deliberately quiet: a group
+	/// with no kind, no tag, an open roster and no relations adds nothing, so a server that never
+	/// touches /group admin sees the vanilla output unchanged.
+	///
+	/// Relations are shown because they are not really secret: an ally relation decides whether a
+	/// player's weapon lands, so it is discoverable by swinging at someone. Better to say it than
+	/// to let players work it out through combat. Groups.ShowStateToPlayers turns this off for a
+	/// server that wants its diplomacy off the record.
+	/// </summary>
+	public static string DescribeForPlayer(ServerMain server, PlayerGroup group, string callerUid)
+	{
+		StratumGroupsConfig config = Config;
+		if (group == null || !config.Enabled || !config.ShowStateToPlayers)
+		{
+			return string.Empty;
+		}
+
+		StringBuilder output = new StringBuilder();
+		StratumGroupKindConfig kind = KindOf(group);
+
+		if (group.StratumKind != null)
+		{
+			output.Append(StratumCommandText.Row("Kind", group.StratumKind
+				+ (kind.MaxMembers > 0 ? " (max " + kind.MaxMembers.ToString(CultureInfo.InvariantCulture) + " members)" : string.Empty)
+				+ (kind.Exclusive ? ", one at a time" : string.Empty)));
+		}
+
+		string tag = group.StratumTag ?? kind.Tag;
+		if (tag != null)
+		{
+			output.Append(StratumCommandText.Row("Tag", FormatTag(tag)));
+		}
+
+		if (group.StratumRosterFrozen)
+		{
+			output.Append(StratumCommandText.Row("Roster", "frozen - no joins, invites, leaves or kicks until staff unfreeze it"));
+		}
+
+		if (config.RelationsEnabled)
+		{
+			List<KeyValuePair<PlayerGroup, string>> relations = ListRelations(server, group);
+			if (relations.Count > 0)
+			{
+				output.Append(StratumCommandText.Row("Relations",
+					string.Join(", ", relations.Select(entry => entry.Key.Name + "=" + entry.Value))));
+			}
+		}
+
+		// Only ever the caller's own lock. Whoever else is pinned into this group is staff business,
+		// and /group admin info is where staff read it.
+		if (callerUid != null
+			&& server.PlayerDataManager.PlayerDataByUid.TryGetValue(callerUid, out ServerPlayerData callerData)
+			&& IsLocked(server, callerData, group.Uid, out DateTime? expires))
+		{
+			output.Append(StratumCommandText.Row("Your membership", "locked by staff" + FormatUntil(expires)
+				+ " - you cannot leave and cannot be kicked"));
+		}
+
+		if (output.Length == 0)
+		{
+			return string.Empty;
+		}
+
+		// Row() opens with a newline and the vanilla builder has already ended its last line, so
+		// drop ours rather than printing a blank line in the middle of the info block.
+		output.Remove(0, 1);
+		output.Append('\n');
+		return output.ToString();
 	}
 
 	// ---------------------------------------------------------------- friendly fire hooks

@@ -298,6 +298,62 @@ public class GroupAdminScenarios : AtlasScenarioBase
 		await Leave(owner);
 	}
 
+	/// <summary>
+	/// /group info is the player-facing half. A player who is not staff has to be able to read
+	/// the state that governs them: which kind the group is, its tag, whether the roster is
+	/// frozen, who it is allied with or at war with, and whether they are personally locked in.
+	/// </summary>
+	[AtlasScenario(TimeoutMs = 300_000)]
+	public async Task GroupInfo_Should_ShowStateToPlayers()
+	{
+		ITestPlayer owner = await World.JoinPlayer("grp-info-own");
+		ITestPlayer other = await World.JoinPlayer("grp-info-oth");
+
+		await CreateGroup(owner, "InfoRed");
+		await CreateGroup(other, "InfoBlue");
+		await SetKind("InfoRed", "faction");
+		await SetKind("InfoBlue", "faction");
+
+		CommandResult tagged = await World.ExecuteCommand("/group admin tag InfoRed RED");
+		Assert.True(tagged.Ok, tagged.Message);
+		CommandResult related = await World.ExecuteCommand("/group admin relation InfoRed InfoBlue enemy");
+		Assert.True(related.Ok, related.Message);
+		CommandResult locked = await World.ExecuteCommand($"/group admin lock InfoRed {owner.Player.PlayerName}");
+		Assert.True(locked.Ok, locked.Message);
+
+		// The owner holds no staff privilege here, so this is the ordinary player's view.
+		TextCommandResult mine = await ExecuteAs(owner, "/group info InfoRed");
+		Assert.Equal(EnumCommandStatus.Success, mine.Status);
+		Assert.Contains("faction", mine.StatusMessage);
+		Assert.Contains("[RED]", mine.StatusMessage);
+		Assert.Contains("InfoBlue", mine.StatusMessage);
+		Assert.Contains("enemy", mine.StatusMessage);
+		Assert.Contains("locked", mine.StatusMessage);
+
+		// Someone outside the group reads the same public state, but not another player's lock.
+		TextCommandResult theirs = await ExecuteAs(other, "/group info InfoRed");
+		Assert.Equal(EnumCommandStatus.Success, theirs.Status);
+		Assert.Contains("InfoBlue", theirs.StatusMessage);
+		Assert.DoesNotContain("Your membership", theirs.StatusMessage);
+
+		CommandResult frozen = await World.ExecuteCommand("/group admin freeze InfoRed on");
+		Assert.True(frozen.Ok, frozen.Message);
+
+		TextCommandResult afterFreeze = await ExecuteAs(owner, "/group info InfoRed");
+		Assert.Contains("frozen", afterFreeze.StatusMessage);
+
+		// A group that was never touched by /group admin still reads exactly as vanilla did.
+		await CreateGroup(other, "InfoPlain");
+		TextCommandResult plain = await ExecuteAs(other, "/group info InfoPlain");
+		Assert.Equal(EnumCommandStatus.Success, plain.Status);
+		Assert.Contains("Members", plain.StatusMessage);
+		Assert.DoesNotContain("Kind", plain.StatusMessage);
+		Assert.DoesNotContain("Roster", plain.StatusMessage);
+		Assert.DoesNotContain("Relations", plain.StatusMessage);
+
+		await Leave(owner, other);
+	}
+
 	// ---------------------------------------------------------------- helpers
 
 	/// <summary>
