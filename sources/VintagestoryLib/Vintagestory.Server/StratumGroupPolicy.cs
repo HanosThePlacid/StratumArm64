@@ -32,28 +32,24 @@ internal static class StratumGroupPolicy
 
 	private static ServerMain installedServer;
 
-	private static StratumGroupsConfig Config
-	{
-		get
-		{
-			StratumConfig config = StratumRuntime.Config;
-			config.EnsurePopulated();
-			return config.Groups;
-		}
-	}
+	// StratumRuntime normalizes the whole config every time it loads or reloads it, so this
+	// reads the live section as it is. It sits on the friendly fire path and must stay cheap.
+	private static StratumGroupsConfig Config => StratumRuntime.Config.Groups;
 
 	public static bool Enabled => Config.Enabled;
 
 	/// <summary>
 	/// Points the API-level friendly fire predicate at this server's group state. Without it
-	/// <see cref="StratumPlayerGroups.SharesGroup(IPlayer, IPlayer)"/> keeps its standalone
-	/// behaviour of counting every shared group, which is what vanilla Stratum did before #335.
+	/// <see cref="StratumPlayerGroups.OnSameSide(IPlayer, IPlayer)"/> keeps its standalone
+	/// behaviour of counting every shared group, which is what Stratum did before #335. Map
+	/// privacy reads <see cref="StratumPlayerGroups.SharesGroup(IPlayer, IPlayer)"/>, which
+	/// none of this touches.
 	/// </summary>
 	public static void Install(ServerMain server)
 	{
 		installedServer = server;
 		StratumPlayerGroups.StratumGroupCountsAsSameSide = GroupCountsAsSameSide;
-		StratumPlayerGroups.StratumGroupsAreAllied = GroupsAreAllied;
+		StratumPlayerGroups.StratumGroupSideRelation = GroupSideRelation;
 	}
 
 	// ---------------------------------------------------------------- kinds
@@ -89,6 +85,35 @@ internal static class StratumGroupPolicy
 		return Config.Kinds.Any(kind => string.Equals(kind.Code, code, StringComparison.OrdinalIgnoreCase));
 	}
 
+	/// <summary>
+	/// Gate for /group create, run before the group exists. The creator joins the new group as
+	/// its owner straight away, so when Groups.DefaultKind is exclusive a player already in a
+	/// group of that kind would otherwise end up holding two of them.
+	/// </summary>
+	public static bool TryPlayerCreate(ServerMain server, ServerPlayerData creatorData, out string error)
+	{
+		error = null;
+		if (!Enabled || creatorData == null)
+		{
+			return true;
+		}
+
+		StratumGroupKindConfig kind = ResolveDefaultKind(warn: false);
+		if (kind == null || !kind.Exclusive)
+		{
+			return true;
+		}
+
+		PlayerGroup conflict = FindExclusiveConflict(server, creatorData, kind, 0);
+		if (conflict != null)
+		{
+			error = "You are already in " + conflict.Name + ", and new groups are a " + kind.Code + ". A player can only be in one " + kind.Code + " at a time.";
+			return false;
+		}
+
+		return true;
+	}
+
 	/// <summary>Called for every group made with /group create.</summary>
 	public static void OnGroupCreated(ServerMain server, PlayerGroup group)
 	{
@@ -97,27 +122,48 @@ internal static class StratumGroupPolicy
 			return;
 		}
 
-		string defaultKind = Config.DefaultKind;
-		if (defaultKind == null)
+		StratumGroupKindConfig kind = ResolveDefaultKind(warn: true);
+		if (kind == null)
 		{
-			return;
-		}
-
-		StratumGroupKindConfig kind = KindByCode(defaultKind);
-		if (kind.Code == null)
-		{
-			StratumRuntime.LogWarning("groups: DefaultKind '" + defaultKind + "' is not defined in Groups.Kinds, new groups stay unclassified");
-			return;
-		}
-
-		if (!kind.PlayerCreatable)
-		{
-			StratumRuntime.LogWarning("groups: DefaultKind '" + kind.Code + "' is not PlayerCreatable, new groups stay unclassified");
 			return;
 		}
 
 		group.StratumKind = kind.Code;
 		server.PlayerDataManager.playerGroupsDirty = true;
+	}
+
+	/// <summary>
+	/// The kind /group create stamps on a new group, or null when new groups stay unclassified.
+	/// TryPlayerCreate and OnGroupCreated both go through here so they cannot disagree about it.
+	/// </summary>
+	private static StratumGroupKindConfig ResolveDefaultKind(bool warn)
+	{
+		string defaultKind = Config.DefaultKind;
+		if (defaultKind == null)
+		{
+			return null;
+		}
+
+		StratumGroupKindConfig kind = KindByCode(defaultKind);
+		if (kind.Code == null)
+		{
+			if (warn)
+			{
+				StratumRuntime.LogWarning("groups: DefaultKind '" + defaultKind + "' is not defined in Groups.Kinds, new groups stay unclassified");
+			}
+			return null;
+		}
+
+		if (!kind.PlayerCreatable)
+		{
+			if (warn)
+			{
+				StratumRuntime.LogWarning("groups: DefaultKind '" + kind.Code + "' is not PlayerCreatable, new groups stay unclassified");
+			}
+			return null;
+		}
+
+		return kind;
 	}
 
 	// ---------------------------------------------------------------- player-initiated gates
@@ -209,7 +255,7 @@ internal static class StratumGroupPolicy
 		return true;
 	}
 
-	/// <summary>Gate for /group invite and /group disband, both of which move the roster.</summary>
+	/// <summary>Gate for /group invite, which moves the roster.</summary>
 	public static bool TryRosterChange(PlayerGroup group, string action, out string error)
 	{
 		error = null;
@@ -220,6 +266,46 @@ internal static class StratumGroupPolicy
 
 		error = "The roster of group " + group.Name + " is frozen, so you cannot " + action + ".";
 		return false;
+	}
+
+	/// <summary>
+	/// Gate for /group disband and /group confirmdisband. Disbanding removes every member at
+	/// once, so a locked owner could use it to walk out of their own lock, and any owner could
+	/// use it to push locked members out. Staff lift the locks first (/group admin unlock or
+	/// remove), which keeps the override explicit and in the audit log.
+	/// </summary>
+	public static bool TryPlayerDisband(ServerMain server, PlayerGroup group, out string error)
+	{
+		if (!TryRosterChange(group, "disband it", out error))
+		{
+			return false;
+		}
+
+		if (!Enabled || group == null)
+		{
+			return true;
+		}
+
+		// Disband is rare and walks every known player once, the same cost as /group info.
+		List<string> locked = new List<string>();
+		foreach (ServerPlayerData data in server.PlayerDataManager.PlayerDataByUid.Values)
+		{
+			if (data.PlayerGroupMemberShips != null
+				&& data.PlayerGroupMemberShips.ContainsKey(group.Uid)
+				&& IsLocked(server, data, group.Uid))
+			{
+				locked.Add(data.LastKnownPlayername);
+			}
+		}
+
+		if (locked.Count > 0)
+		{
+			error = "Group " + group.Name + " has members locked in by staff (" + string.Join(", ", locked.Take(8))
+				+ (locked.Count > 8 ? ", ..." : string.Empty) + "), so it cannot be disbanded until staff unlock them.";
+			return false;
+		}
+
+		return true;
 	}
 
 	// ---------------------------------------------------------------- staff gates
@@ -585,29 +671,31 @@ internal static class StratumGroupPolicy
 		return KindOf(group).CountsAsSameSide;
 	}
 
-	private static bool GroupsAreAllied(int groupUid, int otherGroupUid)
+	// Relations are written to both groups, so reading one side is enough. How an enemy pair
+	// weighs against an allied pair when two players hold several groups is decided in
+	// StratumPlayerGroups.OnSameSide, next to the rest of the precedence.
+	private static int GroupSideRelation(int groupUid, int otherGroupUid)
 	{
 		StratumGroupsConfig config = Config;
 		if (!config.Enabled || !config.RelationsEnabled || !config.AlliesCountAsSameSide || installedServer == null)
 		{
-			return false;
+			return StratumPlayerGroups.RelationNeutral;
 		}
 
 		if (!installedServer.PlayerDataManager.PlayerGroupsById.TryGetValue(groupUid, out PlayerGroup group))
 		{
-			return false;
+			return StratumPlayerGroups.RelationNeutral;
 		}
 
-		// An explicit enemy relation on either side wins over an ally link, so staff can carve
-		// one pairing out of a wider alliance.
-		if (string.Equals(GetRelation(group, otherGroupUid), RelationEnemy, StringComparison.OrdinalIgnoreCase))
+		string relation = GetRelation(group, otherGroupUid);
+		if (string.Equals(relation, RelationEnemy, StringComparison.OrdinalIgnoreCase))
 		{
-			return false;
+			return StratumPlayerGroups.RelationEnemy;
 		}
 
-		return string.Equals(GetRelation(group, otherGroupUid), RelationAlly, StringComparison.OrdinalIgnoreCase)
-			&& GroupCountsAsSameSide(groupUid)
-			&& GroupCountsAsSameSide(otherGroupUid);
+		return string.Equals(relation, RelationAlly, StringComparison.OrdinalIgnoreCase)
+			? StratumPlayerGroups.RelationAlly
+			: StratumPlayerGroups.RelationNeutral;
 	}
 
 	// ---------------------------------------------------------------- tags

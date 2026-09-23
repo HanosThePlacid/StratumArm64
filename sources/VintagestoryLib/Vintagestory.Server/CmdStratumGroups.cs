@@ -22,23 +22,17 @@ internal sealed class CmdStratumGroups
 		this.server = server;
 	}
 
-	/// <summary>Privilege the /group admin subtree requires, read once at registration.</summary>
-	public static string RequiredPrivilege
-	{
-		get
-		{
-			StratumConfig config = StratumRuntime.Config;
-			config.EnsurePopulated();
-			string privilege = config.Commands.GroupAdmin?.Privilege;
-			return string.IsNullOrWhiteSpace(privilege) ? Privilege.controlserver : privilege;
-		}
-	}
-
 	public TextCommandResult Handle(TextCommandCallingArgs args)
 	{
-		StratumConfig config = StratumRuntime.Config;
-		config.EnsurePopulated();
-		if (!config.Groups.Enabled)
+		// The subcommand registers under the /group tree's own privilege, so Commands.GroupAdmin
+		// is read here on every call: a /stratum reload that changes its privilege, switches it
+		// off, or adds a cooldown takes effect without a restart.
+		if (!CheckAccess(args, out TextCommandResult denied))
+		{
+			return denied;
+		}
+
+		if (!StratumRuntime.Config.Groups.Enabled)
 		{
 			return TextCommandResult.Error("Group administration is off (Groups.Enabled=false).");
 		}
@@ -499,14 +493,16 @@ internal sealed class CmdStratumGroups
 			return;
 		}
 
-		if (membership != null)
+		// Reconciled rather than appended: re-adding someone already in the group (to change
+		// their level, say) must not list them twice in the online roster.
+		if (membership != null && !group.OnlinePlayers.Any(online => online.PlayerUID == player.PlayerUID))
 		{
 			group.OnlinePlayers.Add(player);
-			groups.SendPlayerGroup(player, group, membership);
 		}
 
+		// The full list, not just this group, so a group the player was moved out of also
+		// disappears from their client. It refreshes the group tag on their nametag as well.
 		groups.SendPlayerGroups(player);
-		StratumNametags.RefreshFor(player);
 	}
 
 	/// <summary>Re-applies nametags for every online member after a kind or tag change.</summary>
@@ -516,9 +512,41 @@ internal sealed class CmdStratumGroups
 		{
 			if (player is IServerPlayer serverPlayer)
 			{
-				StratumNametags.RefreshFor(serverPlayer);
+				StratumNametags.RefreshGroupTagFor(serverPlayer);
 			}
 		}
+	}
+
+	private bool CheckAccess(TextCommandCallingArgs args, out TextCommandResult failure)
+	{
+		failure = null;
+		StratumCommandsConfig commands = StratumRuntime.Config.Commands;
+		if (!commands.Enabled)
+		{
+			failure = TextCommandResult.Error("Stratum commands are disabled.");
+			return false;
+		}
+
+		StratumCommandAccessConfig access = commands.GroupAdmin;
+		if (access == null || !access.Enabled)
+		{
+			failure = TextCommandResult.Error("/group admin is disabled.");
+			return false;
+		}
+
+		if (!StratumCommandAccessCatalog.CallerHasAccess(args.Caller, server, access))
+		{
+			failure = TextCommandResult.Error("You do not have permission to use /group admin.");
+			return false;
+		}
+
+		if (!StratumCommandCooldowns.TryUse(args.Caller, server, "group admin", access, out TimeSpan remaining))
+		{
+			failure = TextCommandResult.Error("Wait " + Math.Ceiling(remaining.TotalSeconds) + "s before using /group admin again.");
+			return false;
+		}
+
+		return true;
 	}
 
 	/// <summary>

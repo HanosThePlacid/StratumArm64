@@ -74,6 +74,15 @@ such groups a kind with `CountsAsSameSide: false` and they stop doing that.
 The default for every kind, and for unclassified groups, is `true`, so this
 only changes once you ask for it.
 
+Kinds and relations are combat rules only. Map privacy
+(`AllowGroupMapVisibility`) still asks the plain question, "do these two share a
+group?", so a `CountsAsSameSide: false` group keeps its members visible to each
+other, and an alliance never shows one group's coordinates to the other.
+
+If `Groups.DefaultKind` is exclusive, `/group create` refuses a player who
+already holds a group of that kind, since the creator joins the new group as its
+owner.
+
 An example pair of kinds:
 
 ```json
@@ -106,8 +115,10 @@ because a staff removal is deliberate.
 
 `/group admin lock <group> <player> [duration]` pins a player into a group.
 While locked they cannot `/group leave` it, and a group op cannot kick them out
-of it either, which would otherwise void the lock from the group UI. Staff
-removal still works.
+of it either, which would otherwise void the lock from the group UI. The owner
+cannot `/group disband` a group that has a locked member, their own lock
+included, because disbanding removes everyone at once. Staff removal still
+works; to disband, staff unlock or remove the locked members first.
 
 Locks live in the player's own data, so they survive a restart, apply to
 offline players and disappear with the player. They are never swept on a timer:
@@ -155,9 +166,14 @@ same from either side.
 
 With `Groups.AlliesCountAsSameSide` (default `true`), an `ally` relation also
 turns friendly fire off between the two groups' members, as long as both kinds
-count as the same side. An explicit `enemy` relation wins over an ally link, so
-you can carve one pairing out of a wider alliance. Sharing a group outright
-always wins over both.
+count as the same side. When two players hold several groups each, the pairs
+are weighed in this order:
+
+1. Sharing a group of a counting kind outright makes them the same side.
+2. Otherwise, any `enemy` pair between their groups makes them not the same
+   side, even if another pair is allied. That lets you carve one pairing out of
+   a wider alliance.
+3. Otherwise, any `ally` pair makes them the same side.
 
 Set `Groups.RelationsEnabled` to `false` to switch the subcommand off.
 
@@ -180,7 +196,7 @@ All under `Groups` in `stratum.json`:
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `Enabled` | `true` | Turns the whole feature, including `/group admin`, off. |
-| `DefaultKind` | `null` | Kind stamped onto groups made with `/group create`. Must exist and be `PlayerCreatable`. |
+| `DefaultKind` | `null` | Kind stamped onto groups made with `/group create`. Must exist and be `PlayerCreatable`. `none` means the same as `null`. |
 | `Kinds` | one example `faction` entry, used by nothing until a group is given it | Kind definitions, see above. |
 | `RelationsEnabled` | `true` | Whether `/group admin relation` works. |
 | `AlliesCountAsSameSide` | `true` | Whether allied groups count as one side for friendly fire. |
@@ -193,10 +209,15 @@ All under `Groups` in `stratum.json`:
 
 `Commands.GroupAdmin` in `stratum-commands.json` holds the access config for
 the subcommand, defaulting to the vanilla `manageotherplayergroups` privilege.
+It is read on every call, like the other Stratum commands: `Commands.Enabled`,
+`Commands.GroupAdmin.Enabled`, its privilege and its cooldown all take effect
+on `/stratum reload` or `/stratum set` without a restart.
 
 ## Testing it
 
 `tests/StratumScenarios/GroupAdminScenarios.cs` covers the rules end to end
 against a live server: exclusive-kind refusal, staff reassignment, locks and
-their expiry, kick refusal, roster freeze, member caps, kind-aware and
-relation-aware same-side checks, and tag rendering. Run with `make scenarios`.
+their expiry, kick and disband refusal, roster freeze, member caps, the
+exclusive `DefaultKind` on create, runtime access config, kind-aware and
+relation-aware same-side checks kept apart from map privacy, and tags following
+both staff and ordinary membership changes. Run with `make scenarios`.

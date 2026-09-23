@@ -62,9 +62,10 @@ internal sealed class StratumGroupsConfig
 {
 	public bool Enabled { get; set; } = true;
 
-	// Kind assigned to groups made with /group create. Null leaves them unclassified, which is
-	// the vanilla-equivalent default. A kind named here must exist in Kinds and be
-	// PlayerCreatable, otherwise new groups stay unclassified and a warning is logged once.
+	// Kind assigned to groups made with /group create. Null (or "none", which /stratum set can
+	// write where it cannot write null) leaves them unclassified, the vanilla-equivalent
+	// default. A kind named here must exist in Kinds and be PlayerCreatable, otherwise new
+	// groups stay unclassified and each /group create logs a warning.
 	public string DefaultKind { get; set; } = null;
 
 	// Shipped as an example, and referenced by nothing until staff run /group admin kind. The
@@ -122,7 +123,9 @@ internal sealed class StratumGroupsConfig
 			}
 		}
 
-		if (string.IsNullOrWhiteSpace(DefaultKind))
+		if (string.IsNullOrWhiteSpace(DefaultKind)
+			|| string.Equals(DefaultKind.Trim(), "none", StringComparison.OrdinalIgnoreCase)
+			|| string.Equals(DefaultKind.Trim(), "unclassified", StringComparison.OrdinalIgnoreCase))
 		{
 			DefaultKind = null;
 		}

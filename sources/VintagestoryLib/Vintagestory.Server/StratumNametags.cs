@@ -50,10 +50,22 @@ internal sealed class StratumNametags
 	/// </summary>
 	public static bool RefreshFor(IServerPlayer player)
 	{
-		return instance?.Refresh(player) == true;
+		return instance?.Refresh(player, entitlements: true) == true;
 	}
 
-	private bool Refresh(IServerPlayer player)
+	/// <summary>
+	/// Stratum #335: re-applies the name after a group membership, kind or tag change. Called
+	/// from the vanilla group packet senders, which every join, leave, kick, disband and staff
+	/// move already goes through, so no membership path can leave a stale tag behind. Leaves
+	/// the role entitlement alone: that only changes with the role, and swapping it here would
+	/// churn the entitlement list on every group packet.
+	/// </summary>
+	public static void RefreshGroupTagFor(IServerPlayer player)
+	{
+		instance?.Refresh(player, entitlements: false);
+	}
+
+	private bool Refresh(IServerPlayer player, bool entitlements)
 	{
 		if (player == null) return false;
 
@@ -79,7 +91,7 @@ internal sealed class StratumNametags
 			ApplyNametagPrefix(player, prefixes, cfg?.PrefixFormat, groupTag);
 		}
 
-		if (roleTags)
+		if (roleTags && entitlements)
 		{
 			RemoveInjectedEntitlement(player);
 			MaybeInjectEntitlement(player, cfg);
@@ -90,7 +102,7 @@ internal sealed class StratumNametags
 
 	private void OnPlayerJoin(IServerPlayer player)
 	{
-		Refresh(player);
+		Refresh(player, entitlements: true);
 	}
 
 	private void OnPlayerDisconnect(IServerPlayer player)

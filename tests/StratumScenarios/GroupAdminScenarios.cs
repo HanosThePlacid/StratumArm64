@@ -230,7 +230,7 @@ public class GroupAdminScenarios : AtlasScenarioBase
 		await SetKind("SideFaction", "faction");
 		await StaffAdd("SideFaction", second);
 		await World.Ticks(5);
-		Assert.True(StratumPlayerGroups.SharesGroup(first.Player, second.Player));
+		Assert.True(StratumPlayerGroups.OnSameSide(first.Player, second.Player));
 
 		// The same two players sharing only an administrative group are not. Before kinds, an
 		// admin group like this silently switched PvP off between everyone in it.
@@ -243,7 +243,11 @@ public class GroupAdminScenarios : AtlasScenarioBase
 		await SetKind("SideDesk", "utility");
 		await StaffAdd("SideDesk", second);
 		await World.Ticks(5);
-		Assert.False(StratumPlayerGroups.SharesGroup(first.Player, second.Player));
+		Assert.False(StratumPlayerGroups.OnSameSide(first.Player, second.Player));
+
+		// Map privacy asks a different question, plain co-membership, and kinds do not change
+		// its answer: the two still share a group, so they still see each other on the map.
+		Assert.True(StratumPlayerGroups.SharesGroup(first.Player, second.Player));
 		await Leave(first, second);
 	}
 
@@ -258,11 +262,15 @@ public class GroupAdminScenarios : AtlasScenarioBase
 		await SetKind("AllyOne", "faction");
 		await SetKind("AllyTwo", "faction");
 		await World.Ticks(5);
-		Assert.False(StratumPlayerGroups.SharesGroup(first.Player, second.Player));
+		Assert.False(StratumPlayerGroups.OnSameSide(first.Player, second.Player));
 
 		CommandResult allied = await World.ExecuteCommand("/group admin relation AllyOne AllyTwo ally");
 		Assert.True(allied.Ok, allied.Message);
-		Assert.True(StratumPlayerGroups.SharesGroup(first.Player, second.Player));
+		Assert.True(StratumPlayerGroups.OnSameSide(first.Player, second.Player));
+
+		// An alliance is a combat rule only. Map privacy trusts exact coordinates to people who
+		// share a group, and an alliance between two groups must not widen that.
+		Assert.False(StratumPlayerGroups.SharesGroup(first.Player, second.Player));
 
 		// The relation is written to both sides, so it reads the same from either group.
 		CommandResult fromOther = await World.ExecuteCommand("/group admin info AllyTwo");
@@ -270,9 +278,173 @@ public class GroupAdminScenarios : AtlasScenarioBase
 
 		CommandResult enemies = await World.ExecuteCommand("/group admin relation AllyOne AllyTwo enemy");
 		Assert.True(enemies.Ok, enemies.Message);
-		Assert.False(StratumPlayerGroups.SharesGroup(first.Player, second.Player));
+		Assert.False(StratumPlayerGroups.OnSameSide(first.Player, second.Player));
 
 		await Leave(first, second);
+	}
+
+	/// <summary>
+	/// Two players holding several groups each can have an allied pair and an enemy pair at the
+	/// same time. The enemy pair wins, whichever group the lookup happens to reach first.
+	/// </summary>
+	[AtlasScenario(TimeoutMs = 300_000)]
+	public async Task EnemyRelation_Should_Outweigh_AllyRelation_AcrossGroups()
+	{
+		ITestPlayer first = await World.JoinPlayer("grp-prec-a");
+		ITestPlayer second = await World.JoinPlayer("grp-prec-b");
+
+		await CreateGroup(first, "PrecFaction");
+		await CreateGroup(first, "PrecSquad");
+		await CreateGroup(second, "PrecOther");
+		await SetKind("PrecFaction", "faction");
+		await SetKind("PrecSquad", "squad");
+		await SetKind("PrecOther", "faction");
+
+		CommandResult allied = await World.ExecuteCommand("/group admin relation PrecFaction PrecOther ally");
+		Assert.True(allied.Ok, allied.Message);
+		Assert.True(StratumPlayerGroups.OnSameSide(first.Player, second.Player));
+
+		CommandResult enemies = await World.ExecuteCommand("/group admin relation PrecSquad PrecOther enemy");
+		Assert.True(enemies.Ok, enemies.Message);
+		Assert.False(StratumPlayerGroups.OnSameSide(first.Player, second.Player));
+
+		CommandResult neutral = await World.ExecuteCommand("/group admin relation PrecSquad PrecOther neutral");
+		Assert.True(neutral.Ok, neutral.Message);
+		Assert.True(StratumPlayerGroups.OnSameSide(first.Player, second.Player));
+
+		await Leave(first, second);
+	}
+
+	[AtlasScenario(TimeoutMs = 300_000)]
+	public async Task Disband_Should_BeRefused_When_MemberLocked()
+	{
+		ITestPlayer owner = await World.JoinPlayer("grp-disb-owner");
+		ITestPlayer member = await World.JoinPlayer("grp-disb-mem");
+
+		await CreateGroup(owner, "DisbandLocked");
+		await SetKind("DisbandLocked", "faction");
+		await StaffAdd("DisbandLocked", member);
+
+		// Disbanding would push a locked member out, which a kick is not allowed to do either.
+		CommandResult lockMember = await World.ExecuteCommand($"/group admin lock DisbandLocked {member.Player.PlayerName}");
+		Assert.True(lockMember.Ok, lockMember.Message);
+		TextCommandResult withLockedMember = await ExecuteAs(owner, "/group disband DisbandLocked");
+		Assert.Equal(EnumCommandStatus.Error, withLockedMember.Status);
+		Assert.Contains("locked", withLockedMember.StatusMessage);
+
+		// Nor can a locked owner disband their way out of their own lock.
+		CommandResult unlockMember = await World.ExecuteCommand($"/group admin unlock DisbandLocked {member.Player.PlayerName}");
+		Assert.True(unlockMember.Ok, unlockMember.Message);
+		CommandResult lockOwner = await World.ExecuteCommand($"/group admin lock DisbandLocked {owner.Player.PlayerName}");
+		Assert.True(lockOwner.Ok, lockOwner.Message);
+		TextCommandResult withLockedOwner = await ExecuteAs(owner, "/group disband DisbandLocked");
+		Assert.Equal(EnumCommandStatus.Error, withLockedOwner.Status);
+
+		// Once staff lift the lock, disbanding works as vanilla.
+		CommandResult unlockOwner = await World.ExecuteCommand($"/group admin unlock DisbandLocked {owner.Player.PlayerName}");
+		Assert.True(unlockOwner.Ok, unlockOwner.Message);
+		TextCommandResult request = await ExecuteAs(owner, "/group disband DisbandLocked");
+		Assert.Equal(EnumCommandStatus.Success, request.Status);
+		TextCommandResult confirm = await ExecuteAs(owner, "/group confirmdisband DisbandLocked");
+		Assert.Equal(EnumCommandStatus.Success, confirm.Status);
+
+		await Leave(owner, member);
+	}
+
+	/// <summary>
+	/// /group create makes the creator the owner of the new group in the same step, so an
+	/// exclusive Groups.DefaultKind has to be checked before the group exists.
+	/// </summary>
+	[AtlasScenario(TimeoutMs = 300_000)]
+	public async Task Create_Should_BeRefused_When_DefaultKindExclusiveAndAlreadyMember()
+	{
+		ITestPlayer founder = await World.JoinPlayer("grp-create-dup");
+
+		CommandResult setDefault = await World.ExecuteCommand("/stratum set Groups.DefaultKind faction");
+		Assert.True(setDefault.Ok, setDefault.Message);
+		try
+		{
+			await CreateGroup(founder, "CreateFirst");
+
+			TextCommandResult second = await ExecuteAs(founder, "/group create CreateSecond");
+			Assert.Equal(EnumCommandStatus.Error, second.Status);
+			Assert.Contains("CreateFirst", second.StatusMessage);
+		}
+		finally
+		{
+			// The class shares one boot; later scenarios expect new groups to stay unclassified.
+			await World.ExecuteCommand("/stratum set Groups.DefaultKind none");
+		}
+
+		await Leave(founder);
+	}
+
+	/// <summary>
+	/// Commands.GroupAdmin is read on every call rather than captured when /group registers, so
+	/// switching it off or changing its privilege takes effect without a restart.
+	/// </summary>
+	[AtlasScenario(TimeoutMs = 300_000)]
+	public async Task GroupAdmin_Should_FollowCommandAccessConfig_AtRuntime()
+	{
+		ITestPlayer player = await World.JoinPlayer("grp-access");
+
+		// Test players may already hold manageotherplayergroups, so the refusal is proven with a
+		// privilege no role grants, then lifted again, both without a restart.
+		CommandResult raised = await World.ExecuteCommand("/stratum set Commands.GroupAdmin.Privilege stratum.nobodyhasthis");
+		Assert.True(raised.Ok, raised.Message);
+		try
+		{
+			TextCommandResult refused = await ExecuteAs(player, "/group admin kinds");
+			Assert.Equal(EnumCommandStatus.Error, refused.Status);
+
+			CommandResult lowered = await World.ExecuteCommand("/stratum set Commands.GroupAdmin.Privilege chat");
+			Assert.True(lowered.Ok, lowered.Message);
+			TextCommandResult allowed = await ExecuteAs(player, "/group admin kinds");
+			Assert.Equal(EnumCommandStatus.Success, allowed.Status);
+
+			CommandResult disabled = await World.ExecuteCommand("/stratum set Commands.GroupAdmin.Enabled false");
+			Assert.True(disabled.Ok, disabled.Message);
+
+			// Switched off means off for the console too.
+			CommandResult offForConsole = await World.ExecuteCommand("/group admin kinds");
+			Assert.False(offForConsole.Ok, offForConsole.Message);
+		}
+		finally
+		{
+			await World.ExecuteCommand("/stratum set Commands.GroupAdmin.Enabled true");
+			await World.ExecuteCommand("/stratum set Commands.GroupAdmin.Privilege manageotherplayergroups");
+		}
+
+		await Leave(player);
+	}
+
+	/// <summary>
+	/// A group tag has to follow ordinary membership changes, not only staff ones: a player who
+	/// joins through an invite picks the tag up, and loses it again on /group leave.
+	/// </summary>
+	[AtlasScenario(TimeoutMs = 300_000)]
+	public async Task Nametag_Should_Follow_OrdinaryJoinAndLeave()
+	{
+		ITestPlayer owner = await World.JoinPlayer("grp-ntag-owner");
+		ITestPlayer member = await World.JoinPlayer("grp-ntag-mem");
+
+		await CreateGroup(owner, "BlueTagged");
+		await SetKind("BlueTagged", "faction");
+		CommandResult tagged = await World.ExecuteCommand("/group admin tag BlueTagged BLU");
+		Assert.True(tagged.Ok, tagged.Message);
+
+		await Invite(owner, "BlueTagged", member);
+		TextCommandResult accepted = await ExecuteAs(member, "/group acceptinvite BlueTagged");
+		Assert.Equal(EnumCommandStatus.Success, accepted.Status);
+		await World.Ticks(5);
+		Assert.Contains("[BLU]", NametagOf(member));
+
+		TextCommandResult left = await ExecuteAs(member, "/group leave BlueTagged");
+		Assert.Equal(EnumCommandStatus.Success, left.Status);
+		await World.Ticks(5);
+		Assert.DoesNotContain("[BLU]", NametagOf(member));
+
+		await Leave(owner, member);
 	}
 
 	[AtlasScenario(TimeoutMs = 300_000)]
