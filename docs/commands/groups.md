@@ -43,7 +43,7 @@ kind and never runs `/group admin` behaves exactly as it did before.
 | --- | --- |
 | `<group>` | Group name, or its numeric Uid. |
 | `<player>` | Player name. Offline players work, as long as they have joined once. |
-| `access` | `0` = None, `1` = Member (default), `2` = Op, `3` = Owner. Same scale as vanilla `/group addplayer`. |
+| `access` | `1` = Member (default), `2` = Op, `3` = Owner. Same scale as vanilla `/group addplayer`. `0` = None is refused on both routes, because it is not a membership. Use `/group admin remove` instead. |
 | `duration` | Omitted or `perm` for until staff unlock it, otherwise `30s`, `90m`, `4h`, `3d`, `2w`. |
 
 Every write is written to the audit log with the acting staff member's name.
@@ -59,7 +59,7 @@ unless `Groups.DefaultKind` says otherwise.
 | Kind field | Meaning |
 | --- | --- |
 | `Code` | The name used by `/group admin kind`. |
-| `Exclusive` | A player may hold at most one live membership of this kind. Two *different* exclusive kinds do not conflict, so one faction plus one arena team is fine. |
+| `Exclusive` | A player may hold at most one live membership of this kind. Two *different* exclusive kinds do not conflict, so one faction plus one arena team is fine. Turning this on for a kind that groups already carry does not move anyone. Boot and `/stratum reload` log a warning naming each player left in two groups of the kind, and the reload reply lists them too. |
 | `MaxMembers` | `0` for unlimited. Player joins are refused at the cap; staff adds go past it and say so in the audit log. |
 | `Lockable` | Whether `/group admin lock` applies to groups of this kind. |
 | `CountsAsSameSide` | Whether sharing this group counts as being on the same side, which is what `FriendlyFire.AllowGroupDamage=false` reads. |
@@ -107,6 +107,10 @@ Where a player join is *refused* on an exclusive-kind conflict, a staff add
 and the reply says which group they left. That is what "put this player on red
 team" means during an event. The one thing that stops it is a lock on the group
 they would be leaving; clear that first.
+
+`/group admin info` lists the group's online members as well as its member
+count. The online list is what tag changes walk to update nametags, so a
+player missing from it keeps a stale tag.
 
 `/group admin remove` clears any lock on that group as it removes the player,
 because a staff removal is deliberate.
@@ -212,6 +216,11 @@ the subcommand, defaulting to the vanilla `manageotherplayergroups` privilege.
 It is read on every call, like the other Stratum commands: `Commands.Enabled`,
 `Commands.GroupAdmin.Enabled`, its privilege and its cooldown all take effect
 on `/stratum reload` or `/stratum set` without a restart.
+
+The privilege can only narrow access, not widen it. `/group admin` sits under
+the vanilla `/group` tree, which already requires `controlplayergroups`, so a
+caller needs that as well as `Commands.GroupAdmin.Privilege`. Setting the
+privilege to `chat` does not open the subcommand to ordinary players.
 
 ## Testing it
 

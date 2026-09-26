@@ -81,9 +81,11 @@ internal sealed class CmdStratumGroups
 		EnumPlayerGroupMemberShip level = EnumPlayerGroupMemberShip.Member;
 		if (!string.IsNullOrWhiteSpace(levelText))
 		{
-			if (!int.TryParse(levelText, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) || parsed < 0 || parsed > 3)
+			// 0 = None is refused rather than stored: a None membership is not a membership, so
+			// the player would be reported as added while holding nothing.
+			if (!int.TryParse(levelText, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) || parsed < 1 || parsed > 3)
 			{
-				return TextCommandResult.Error("Access must be 0 = None, 1 = Member, 2 = Op, 3 = Owner.");
+				return TextCommandResult.Error(StratumGroupPolicy.AccessLevelError);
 			}
 
 			level = (EnumPlayerGroupMemberShip)parsed;
@@ -364,6 +366,10 @@ internal sealed class CmdStratumGroups
 		output.Append(StratumCommandText.Row("Kind", group.StratumKind ?? "unclassified"));
 		output.Append(StratumCommandText.Row("Members", StratumGroupPolicy.CountMembers(server, group.Uid)
 			+ (kind.MaxMembers > 0 ? " of " + kind.MaxMembers : string.Empty)));
+		// The raw online roster, duplicates and all, since that is the list tag refreshes walk.
+		output.Append(StratumCommandText.Row("Online members", group.OnlinePlayers.Count == 0
+			? "none"
+			: string.Join(", ", group.OnlinePlayers.Select(player => player.PlayerName))));
 		output.Append(StratumCommandText.Row("Roster", group.StratumRosterFrozen ? "frozen" : "open"));
 		output.Append(StratumCommandText.Row("Tag", group.StratumTag ?? kind.Tag ?? "none"));
 		output.Append(StratumCommandText.Row("Counts as same side", kind.CountsAsSameSide ? "yes" : "no"));

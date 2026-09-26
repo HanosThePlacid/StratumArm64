@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Atlas.Api;
 using Atlas.XUnit;
 using Vintagestory.API.Common;
@@ -471,6 +473,167 @@ public class GroupAdminScenarios : AtlasScenarioBase
 	}
 
 	/// <summary>
+	/// Vanilla /group addplayer never put the added player on the group's online roster, and a
+	/// tag change only re-applies nametags for players on it. So a player added that way kept
+	/// the old tag after a retag, until they reconnected.
+	/// </summary>
+	[AtlasScenario(TimeoutMs = 300_000)]
+	public async Task Nametag_Should_FollowRetag_When_AddedThroughVanillaAddPlayer()
+	{
+		ITestPlayer owner = await World.JoinPlayer("grp-retag-owner");
+		ITestPlayer member = await World.JoinPlayer("grp-retag-mem");
+
+		await CreateGroup(owner, "Retagged");
+		await SetKind("Retagged", "faction");
+		CommandResult tagged = await World.ExecuteCommand("/group admin tag Retagged RED");
+		Assert.True(tagged.Ok, tagged.Message);
+
+		// /group addplayer requires a player caller. Test players join with the server's
+		// max-privilege role, so the owner holds manageotherplayergroups.
+		TextCommandResult added = await ExecuteAs(owner, $"/group addplayer Retagged {member.Player.PlayerName} 1");
+		Assert.Equal(EnumCommandStatus.Success, added.Status);
+		await World.Ticks(5);
+		Assert.Contains("[RED]", NametagOf(member));
+
+		CommandResult retagged = await World.ExecuteCommand("/group admin tag Retagged BLU");
+		Assert.True(retagged.Ok, retagged.Message);
+		await World.Ticks(5);
+		Assert.Contains("[BLU]", NametagOf(member));
+		Assert.DoesNotContain("[RED]", NametagOf(member));
+
+		await Leave(owner, member);
+	}
+
+	/// <summary>
+	/// When /group addplayer moves a player out of another exclusive group, the client has to be
+	/// told to drop that group. A single-group update only adds the new one, so the client kept
+	/// showing the old group until reconnect. Only the full group list clears it.
+	/// </summary>
+	[AtlasScenario(TimeoutMs = 300_000)]
+	public async Task AddPlayer_Should_SendFullGroupList_When_DisplacingFromFaction()
+	{
+		// Two owners for the same reason as StaffAdd_Should_MovePlayer_When_FactionConflicts.
+		ITestPlayer redOwner = await World.JoinPlayer("grp-ap-red");
+		ITestPlayer blueOwner = await World.JoinPlayer("grp-ap-blue");
+		ITestPlayer moved = await World.JoinPlayer("grp-ap-moved");
+
+		await CreateGroup(redOwner, "RedListed");
+		await CreateGroup(blueOwner, "BlueListed");
+		await SetKind("RedListed", "faction");
+		await SetKind("BlueListed", "faction");
+		await StaffAdd("RedListed", moved);
+		await World.Ticks(5);
+
+		ChatProbe probe = ChatProbe.Attach(World, moved);
+		TextCommandResult added = await ExecuteAs(blueOwner, $"/group addplayer BlueListed {moved.Player.PlayerName} 1");
+		Assert.Equal(EnumCommandStatus.Success, added.Status);
+		await World.Ticks(5);
+
+		IReadOnlyList<IReadOnlyList<string>> listings = probe.NewGroupListings();
+		Assert.NotEmpty(listings);
+		IReadOnlyList<string> latest = listings[^1];
+		Assert.Contains("BlueListed", latest);
+		Assert.DoesNotContain("RedListed", latest);
+
+		await Leave(redOwner, blueOwner, moved);
+	}
+
+	/// <summary>
+	/// Re-adding a player who is already in the group, to change their level say, has to leave
+	/// them on the online roster once. A second entry is harmless to membership but makes every
+	/// walk over the roster do its work twice.
+	/// </summary>
+	[AtlasScenario(TimeoutMs = 300_000)]
+	public async Task StaffAdd_Should_ListPlayerOnlineOnce_When_AddedTwice()
+	{
+		ITestPlayer owner = await World.JoinPlayer("grp-twice-owner");
+		ITestPlayer member = await World.JoinPlayer("grp-twice-mem");
+
+		await CreateGroup(owner, "AddedTwice");
+		await StaffAdd("AddedTwice", member);
+		CommandResult promoted = await World.ExecuteCommand($"/group admin add AddedTwice {member.Player.PlayerName} 2");
+		Assert.True(promoted.Ok, promoted.Message);
+
+		string online = await InfoRow("AddedTwice", "Online members");
+		Assert.Equal(1, CountOccurrences(online, member.Player.PlayerName));
+
+		await Leave(owner, member);
+	}
+
+	/// <summary>
+	/// Access 0 is None, which is not a membership. Both staff routes used to store it anyway and
+	/// report the player as added while they held nothing.
+	/// </summary>
+	[AtlasScenario(TimeoutMs = 300_000)]
+	public async Task StaffAdd_Should_RefuseAccessNone_OnBothRoutes()
+	{
+		ITestPlayer owner = await World.JoinPlayer("grp-none-owner");
+		ITestPlayer target = await World.JoinPlayer("grp-none-target");
+
+		await CreateGroup(owner, "NoneLevel");
+
+		CommandResult adminAdd = await World.ExecuteCommand($"/group admin add NoneLevel {target.Player.PlayerName} 0");
+		Assert.False(adminAdd.Ok, adminAdd.Message);
+		Assert.Contains("/group admin remove", adminAdd.Message);
+
+		TextCommandResult vanillaAdd = await ExecuteAs(owner, $"/group addplayer NoneLevel {target.Player.PlayerName} 0");
+		Assert.Equal(EnumCommandStatus.Error, vanillaAdd.Status);
+		Assert.Contains("/group admin remove", vanillaAdd.StatusMessage);
+
+		Assert.Equal(1, await MemberCount("NoneLevel"));
+		Assert.DoesNotContain(target.Player.PlayerName, await InfoRow("NoneLevel", "Online members"));
+
+		await Leave(owner, target);
+	}
+
+	/// <summary>
+	/// Turning Exclusive on for a kind in stratum.json applies to the groups already carrying it,
+	/// with no check, so a player can be left in two of them. /group admin kind refuses the same
+	/// thing at runtime. The reload has to name who is affected rather than pass silently.
+	/// </summary>
+	[AtlasScenario(TimeoutMs = 300_000)]
+	public async Task Reload_Should_ReportExclusiveConflicts_When_KindTurnsExclusive()
+	{
+		ITestPlayer ownerA = await World.JoinPlayer("grp-flip-a");
+		ITestPlayer ownerB = await World.JoinPlayer("grp-flip-b");
+		ITestPlayer member = await World.JoinPlayer("grp-flip-mem");
+
+		await CreateGroup(ownerA, "FlipDeskA");
+		await CreateGroup(ownerB, "FlipDeskB");
+		await SetKind("FlipDeskA", "utility");
+		await SetKind("FlipDeskB", "utility");
+		await StaffAdd("FlipDeskA", member);
+		await StaffAdd("FlipDeskB", member);
+
+		string configPath = Path.Combine(GamePaths.Config, "stratum.json");
+		string original = await File.ReadAllTextAsync(configPath);
+		try
+		{
+			JsonNode config = JsonNode.Parse(original)!;
+			foreach (JsonNode? kind in config["Groups"]!["Kinds"]!.AsArray())
+			{
+				if ((string?)kind!["Code"] == "utility")
+				{
+					kind["Exclusive"] = true;
+				}
+			}
+
+			await File.WriteAllTextAsync(configPath, config.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+			CommandResult reloaded = await World.ExecuteCommand("/stratum reload");
+			string message = reloaded.Message ?? string.Empty;
+			Assert.Contains("Exclusive group kinds", message);
+			Assert.Contains(member.Player.PlayerName + " is in 2 groups of exclusive kind utility: FlipDeskA, FlipDeskB", message);
+		}
+		finally
+		{
+			await File.WriteAllTextAsync(configPath, original);
+			await World.ExecuteCommand("/stratum reload");
+		}
+
+		await Leave(ownerA, ownerB, member);
+	}
+
+	/// <summary>
 	/// /group info is the player-facing half. A player who is not staff has to be able to read
 	/// the state that governs them: which kind the group is, its tag, whether the roster is
 	/// frozen, who it is allied with or at war with, and whether they are personally locked in.
@@ -575,6 +738,31 @@ public class GroupAdminScenarios : AtlasScenarioBase
 	{
 		TextCommandResult result = await ExecuteAs(inviter, $"/group invite {groupName} {target.Player.PlayerName}");
 		Assert.Equal(EnumCommandStatus.Success, result.Status);
+	}
+
+	/// <summary>The value of one /group admin info row, markup included.</summary>
+	private async Task<string> InfoRow(string groupName, string label)
+	{
+		CommandResult info = await World.ExecuteCommand($"/group admin info {groupName}");
+		Assert.True(info.Ok, info.Message);
+
+		string message = info.Message ?? string.Empty;
+		int rowStart = message.IndexOf(label + ":", StringComparison.Ordinal);
+		Assert.True(rowStart >= 0, $"no {label} row in: {message}");
+
+		int rowEnd = message.IndexOf('\n', rowStart);
+		return rowEnd < 0 ? message[rowStart..] : message[rowStart..rowEnd];
+	}
+
+	private static int CountOccurrences(string text, string value)
+	{
+		int count = 0;
+		for (int index = text.IndexOf(value, StringComparison.Ordinal); index >= 0; index = text.IndexOf(value, index + value.Length, StringComparison.Ordinal))
+		{
+			count++;
+		}
+
+		return count;
 	}
 
 	/// <summary>Member count as /group admin info reports it, parsed off the "Members" row.</summary>

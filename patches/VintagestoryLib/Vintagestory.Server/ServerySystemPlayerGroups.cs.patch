@@ -1,5 +1,5 @@
 diff --git a/VintagestoryLib/Vintagestory.Server/ServerySystemPlayerGroups.cs b/VintagestoryLib/Vintagestory.Server/ServerySystemPlayerGroups.cs
-index 674b9fc..6dca548 100644
+index 674b9fc..9dd2a07 100644
 --- a/VintagestoryLib/Vintagestory.Server/ServerySystemPlayerGroups.cs
 +++ b/VintagestoryLib/Vintagestory.Server/ServerySystemPlayerGroups.cs
 @@ -132,10 +132,19 @@ public class ServerySystemPlayerGroups : ServerSystem
@@ -37,12 +37,16 @@ index 674b9fc..6dca548 100644
  			if (server.PlayersByUid.TryGetValue(playerDataByLastKnownName.PlayerUID, out var value))
  			{
  				SendPlayerGroups(value);
-@@ -169,15 +182,32 @@ public class ServerySystemPlayerGroups : ServerSystem
+@@ -169,15 +182,41 @@ public class ServerySystemPlayerGroups : ServerSystem
  		EnumPlayerGroupMemberShip level = (EnumPlayerGroupMemberShip)args[2];
  		IServerPlayerData playerDataByLastKnownName = server.PlayerDataManager.GetPlayerDataByLastKnownName(text2);
  		PlayerGroup playerGroupByName = server.PlayerDataManager.GetPlayerGroupByName(text);
  		if (playerGroupByName != null && playerDataByLastKnownName != null)
  		{
++			if (level == EnumPlayerGroupMemberShip.None) // Stratum: issue #335 a None membership is not a membership, refuse it like /group admin add
++			{
++				return TextCommandResult.Error(StratumGroupPolicy.AccessLevelError);
++			}
 +			// Stratum: issue #335 kind rules also apply to the vanilla staff add, so /group addplayer
 +			// and /group admin add cannot disagree about exclusive kinds.
 +			ServerPlayerData stratumTargetData = server.PlayerDataManager.PlayerDataByUid[playerDataByLastKnownName.PlayerUID];
@@ -60,6 +64,11 @@ index 674b9fc..6dca548 100644
  			server.PlayerDataManager.playerDataDirty = true;
  			if (server.PlayersByUid.TryGetValue(playerDataByLastKnownName.PlayerUID, out var value))
  			{
++				// Stratum: issue #335 vanilla never lists the added player as online, so group tag refreshes skipped them
++				if (!playerGroupByName.OnlinePlayers.Exists((IPlayer onlinePlayer) => onlinePlayer.PlayerUID == value.PlayerUID))
++				{
++					playerGroupByName.OnlinePlayers.Add(value);
++				}
  				SendPlayerGroup(value, playerGroupByName, membership);
 +				if (stratumDisplaced != null)
 +				{
@@ -70,7 +79,7 @@ index 674b9fc..6dca548 100644
  		}
  		string text3 = ((playerDataByLastKnownName == null) ? ("could not find player: " + text2 + " ") : string.Empty);
  		string text4 = ((playerGroupByName == null) ? ("could not find group: " + text) : string.Empty);
-@@ -251,17 +281,23 @@ public class ServerySystemPlayerGroups : ServerSystem
+@@ -251,17 +290,23 @@ public class ServerySystemPlayerGroups : ServerSystem
  		}
  		if (Regex.IsMatch(text, "[^" + GlobalConstants.AllowedChatGroupChars + "]+"))
  		{
@@ -94,7 +103,7 @@ index 674b9fc..6dca548 100644
  		SendPlayerGroup(serverPlayer, playerGroup);
  		GotoGroup(serverPlayer, playerGroup.Uid);
  		server.PlayerDataManager.playerDataDirty = true;
-@@ -297,10 +333,16 @@ public class ServerySystemPlayerGroups : ServerSystem
+@@ -297,10 +342,16 @@ public class ServerySystemPlayerGroups : ServerSystem
  		}
  		if (!HasPlayerPrivilege(serverPlayer, num, EnumPlayerGroupPrivilege.Disband))
  		{
@@ -111,7 +120,7 @@ index 674b9fc..6dca548 100644
  			return Error(args, "Disband already requested, type /group confirmdisband [groupname] to confirm.");
  		}
  		DisbandRequests.Add(num, playerUID);
-@@ -325,10 +367,15 @@ public class ServerySystemPlayerGroups : ServerSystem
+@@ -325,10 +376,15 @@ public class ServerySystemPlayerGroups : ServerSystem
  			return Error(args, "You must be the owner of the group to disband it.");
  		}
  		if (DisbandRequests.ContainsKey(num) && DisbandRequests[num] == playerUID)
@@ -127,7 +136,7 @@ index 674b9fc..6dca548 100644
  			server.PlayerDataManager.playerDataDirty = true;
  			foreach (IServerPlayer onlinePlayer in playerGroup.OnlinePlayers)
  			{
-@@ -397,10 +444,15 @@ public class ServerySystemPlayerGroups : ServerSystem
+@@ -397,10 +453,15 @@ public class ServerySystemPlayerGroups : ServerSystem
  		if (value == null || value.JoinPolicy != "everyone")
  		{
  			return Error(args, "No such group found or the invite policy is invite only");
@@ -143,7 +152,7 @@ index 674b9fc..6dca548 100644
  		PlayerGroupsByUid[uid].OnlinePlayers.Add(serverPlayer);
  		SendPlayerGroup(serverPlayer, PlayerGroupsByUid[uid], membership);
  		GotoGroup(serverPlayer, uid);
-@@ -452,10 +504,16 @@ public class ServerySystemPlayerGroups : ServerSystem
+@@ -452,10 +513,16 @@ public class ServerySystemPlayerGroups : ServerSystem
  		}
  		if (!HasPlayerPrivilege(serverPlayer, num, EnumPlayerGroupPrivilege.Invite))
  		{
@@ -160,7 +169,7 @@ index 674b9fc..6dca548 100644
  		{
  			return Error(args, "Can't invite. Player name {0} does not exist or is not online", text);
  		}
-@@ -498,10 +556,15 @@ public class ServerySystemPlayerGroups : ServerSystem
+@@ -498,10 +565,15 @@ public class ServerySystemPlayerGroups : ServerSystem
  			ServerPlayerData serverdata = ((ServerPlayer)serverPlayer).serverdata;
  			if (serverdata.PlayerGroupMemberShips.ContainsKey(result))
  			{
@@ -176,7 +185,7 @@ index 674b9fc..6dca548 100644
  				PlayerGroupMembership membership = serverdata.JoinGroup(value, EnumPlayerGroupMemberShip.Member);
  				server.PlayerDataManager.playerDataDirty = true;
  				PlayerGroupsByUid[result].OnlinePlayers.Add(serverPlayer);
-@@ -551,10 +614,15 @@ public class ServerySystemPlayerGroups : ServerSystem
+@@ -551,10 +623,15 @@ public class ServerySystemPlayerGroups : ServerSystem
  			return Error(args, "No such group membership found, perhaps you already left this group.");
  		}
  		if (PlayerGroupsByUid.ContainsKey(num))
@@ -192,7 +201,7 @@ index 674b9fc..6dca548 100644
  			server.PlayerDataManager.playerDataDirty = true;
  			SendPlayerGroups(serverPlayer);
  			playerGroup.OnlinePlayers.Remove(serverPlayer);
-@@ -623,10 +691,13 @@ public class ServerySystemPlayerGroups : ServerSystem
+@@ -623,10 +700,13 @@ public class ServerySystemPlayerGroups : ServerSystem
  				num++;
  				stringBuilder.Append(value2.LastKnownPlayername);
  			}
@@ -206,7 +215,7 @@ index 674b9fc..6dca548 100644
  
  	private TextCommandResult CmdKickFromgroup(TextCommandCallingArgs args)
  	{
-@@ -661,10 +732,15 @@ public class ServerySystemPlayerGroups : ServerSystem
+@@ -661,10 +741,15 @@ public class ServerySystemPlayerGroups : ServerSystem
  				}
  				if (!HasPlayerPrivilege(player, num, EnumPlayerGroupPrivilege.Kick, value2.PlayerUID))
  				{
@@ -222,7 +231,7 @@ index 674b9fc..6dca548 100644
  				if (server.PlayersByUid.TryGetValue(value2.PlayerUID, out var value))
  				{
  					PlayerGroupsByUid[num].OnlinePlayers.Remove(value);
-@@ -759,10 +835,11 @@ public class ServerySystemPlayerGroups : ServerSystem
+@@ -759,10 +844,11 @@ public class ServerySystemPlayerGroups : ServerSystem
  		return Success(args, server.PlayerDataManager.PlayerDataByUid[playerUID].AllowInvite ? "Ok, Group invites are now enabled" : "Ok, Group invites are now disabled");
  	}
  
@@ -234,7 +243,7 @@ index 674b9fc..6dca548 100644
  		{
  			if (playerGroupMemberShip.Value.Level != EnumPlayerGroupMemberShip.None)
  			{
-@@ -782,10 +859,11 @@ public class ServerySystemPlayerGroups : ServerSystem
+@@ -782,10 +868,11 @@ public class ServerySystemPlayerGroups : ServerSystem
  		});
  	}
  
@@ -246,7 +255,7 @@ index 674b9fc..6dca548 100644
  		{
  			server.SendPacket(player, new Packet_Server
  			{
-@@ -795,10 +873,11 @@ public class ServerySystemPlayerGroups : ServerSystem
+@@ -795,10 +882,11 @@ public class ServerySystemPlayerGroups : ServerSystem
  		}
  	}
  

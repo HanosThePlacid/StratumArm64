@@ -30,6 +30,9 @@ internal static class StratumGroupPolicy
 
 	private const string LocksKey = "stratum.group-locks.v1";
 
+	/// <summary>Shared by /group admin add and vanilla /group addplayer, which both refuse 0 = None.</summary>
+	public const string AccessLevelError = "Access must be 1 = Member, 2 = Op or 3 = Owner. Use /group admin remove to take a player out.";
+
 	private static ServerMain installedServer;
 
 	// StratumRuntime normalizes the whole config every time it loads or reloads it, so this
@@ -377,6 +380,78 @@ internal static class StratumGroupPolicy
 		}
 
 		return null;
+	}
+
+	/// <summary>
+	/// Players holding live memberships in more than one group of the same exclusive kind, one
+	/// line each. /group admin kind refuses to create that state, but turning Exclusive on for a
+	/// kind in stratum.json applies to its existing groups with no check, so boot and
+	/// /stratum reload report what it left behind instead of letting it pass silently.
+	/// </summary>
+	public static List<string> FindExclusiveViolations(ServerMain server)
+	{
+		List<string> violations = new List<string>();
+		if (!Enabled || server?.PlayerDataManager?.PlayerDataByUid == null)
+		{
+			return violations;
+		}
+
+		foreach (ServerPlayerData data in server.PlayerDataManager.PlayerDataByUid.Values)
+		{
+			if (data.PlayerGroupMemberShips == null)
+			{
+				continue;
+			}
+
+			Dictionary<string, List<string>> groupsByKind = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+			foreach (KeyValuePair<int, PlayerGroupMembership> membership in data.PlayerGroupMemberShips)
+			{
+				if (membership.Value == null || membership.Value.Level == EnumPlayerGroupMemberShip.None
+					|| !server.PlayerDataManager.PlayerGroupsById.TryGetValue(membership.Key, out PlayerGroup group))
+				{
+					continue;
+				}
+
+				StratumGroupKindConfig kind = KindOf(group);
+				if (kind.Code == null || !kind.Exclusive)
+				{
+					continue;
+				}
+
+				if (!groupsByKind.TryGetValue(kind.Code, out List<string> names))
+				{
+					names = new List<string>();
+					groupsByKind[kind.Code] = names;
+				}
+
+				names.Add(group.Name);
+			}
+
+			foreach (KeyValuePair<string, List<string>> entry in groupsByKind)
+			{
+				if (entry.Value.Count > 1)
+				{
+					entry.Value.Sort(StringComparer.OrdinalIgnoreCase);
+					violations.Add(data.LastKnownPlayername + " is in " + entry.Value.Count + " groups of exclusive kind "
+						+ entry.Key + ": " + string.Join(", ", entry.Value));
+				}
+			}
+		}
+
+		violations.Sort(StringComparer.OrdinalIgnoreCase);
+		return violations;
+	}
+
+	/// <summary>Logs <see cref="FindExclusiveViolations"/> as warnings and returns them.</summary>
+	public static List<string> WarnExclusiveViolations(ServerMain server)
+	{
+		List<string> violations = FindExclusiveViolations(server);
+		foreach (string violation in violations)
+		{
+			StratumRuntime.LogWarning("groups: " + violation + ". Use /group admin remove to settle it.");
+		}
+
+		return violations;
 	}
 
 	public static int CountMembers(ServerMain server, int groupUid)
